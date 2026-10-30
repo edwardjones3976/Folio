@@ -108,6 +108,20 @@ describe('documentation and fixtures', () => {
     assert.ok(readme.includes('https://claude.ai/*'));
   });
 
+  it('human-facing docs are self-contained HTML, one copy each (review finding 6)', () => {
+    const docs = readdirSync(join(ROOT, 'docs'));
+    assert.deepEqual(docs.filter((f) => !f.endsWith('.html')), [], 'no Markdown (or other) copies in docs/');
+    for (const name of ['P0-COMPLETION-REPORT.html', 'MANUAL-LIVE-CHECK.html']) {
+      assert.ok(docs.includes(name), name);
+      const html = readFileSync(join(ROOT, 'docs', name), 'utf8');
+      assert.match(html, /^<!doctype html>/i, name);
+      assert.doesNotMatch(html, /<script|<link|<img|<iframe|<object|\ssrc=|url\(|@import/i, `${name} loads no external resources`);
+      assert.doesNotMatch(html, /href="(?!#)/, `${name} links nowhere outside itself`);
+      assert.ok(readme.includes(`(docs/${name})`), `README links docs/${name}`);
+    }
+    assert.doesNotMatch(readme, /docs\/[A-Z0-9-]+\.md/, 'README links no Markdown docs');
+  });
+
   it('every fixture is labelled synthetic', () => {
     const dir = join(ROOT, 'fixtures', 'claude');
     for (const file of readdirSync(dir).filter((f) => f.endsWith('.html'))) {

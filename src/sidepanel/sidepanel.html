@@ -17,6 +17,7 @@
     <h2 id="status-heading" class="visually-hidden">Page status</h2>
     <p id="status-text" class="status-text">Connecting to the current tab…</p>
     <p id="action-status" class="action-status"></p>
+    <button type="button" id="reindex" hidden>Re-index this page</button>
     <ul id="feature-chips" class="chips" aria-label="Feature status for this page"></ul>
     <details id="coverage-details" hidden>
       <summary>Coverage details</summary>
@@ -87,7 +88,7 @@
       </fieldset>
 
       <h2>Stored data</h2>
-      <p class="help">Folio stores only its settings and your bookmarks, in this browser profile (chrome.storage.local). Each bookmark keeps up to 160 characters from the start of the bookmarked message so it can be found again. Conversation text is otherwise kept only in memory while the page is open. Nothing is sent anywhere.</p>
+      <p class="help">Folio stores only its settings and your bookmarks, in this browser profile (chrome.storage.local). Each bookmark keeps up to 160 characters from the start of the bookmarked message, and content digests of the messages before and after it, so it can be found again. Conversation text is otherwise kept only in memory while the page is open. Nothing is sent anywhere. Erase all also empties what Folio has indexed in open claude.ai tabs.</p>
       <div class="row">
         <button type="button" id="inspect-refresh">Show stored data</button>
         <button type="button" id="export-data">Download stored data (JSON)</button>

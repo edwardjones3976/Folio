@@ -51,7 +51,12 @@ export async function refreshStoredData(area: StorageAreaLike): Promise<void> {
     `${keys} ${keys === 1 ? 'key' : 'keys'} stored` + (bytes === null ? '.' : `, ${bytes} bytes in chrome.storage.local.`);
 }
 
-export function initSettings(area: StorageAreaLike): void {
+/**
+ * `forgetIndexes` runs after "Erase all" has cleared storage: it empties the
+ * live index in open claude.ai tabs and the panel's own caches, and returns how
+ * many tabs confirmed.
+ */
+export function initSettings(area: StorageAreaLike, forgetIndexes: () => Promise<number>): void {
   const save = (patch: Partial<Omit<Settings, 'version'>>, message: string) => {
     saveSettings(area, patch).then(
       () => announce(message),
@@ -100,7 +105,7 @@ export function initSettings(area: StorageAreaLike): void {
     pendingErase = kind;
     byId('erase-question').textContent =
       kind === 'all'
-        ? 'Erase all Folio data (bookmarks and settings) from this browser? This cannot be undone.'
+        ? 'Erase all Folio data (bookmarks, settings, and what Folio has indexed in open claude.ai tabs) from this browser? This cannot be undone.'
         : 'Erase all bookmarks from this browser? This cannot be undone.';
     confirm.hidden = false;
     byId('erase-confirm-no').focus();
@@ -119,13 +124,22 @@ export function initSettings(area: StorageAreaLike): void {
   byId('erase-confirm-yes').addEventListener('click', () => {
     const kind = pendingErase;
     if (!kind) return;
-    const work = kind === 'all' ? eraseAll(area) : eraseBookmarks(area);
+    const work =
+      kind === 'all'
+        ? eraseAll(area).then(async () => {
+            const tabs = await forgetIndexes();
+            return `All Folio data erased: bookmarks, settings, and the index in ${tabs} open claude.ai ${tabs === 1 ? 'tab' : 'tabs'}.`;
+          })
+        : eraseBookmarks(area).then(() => 'All bookmarks erased.');
     work
-      .then(() => refreshStoredData(area))
+      .then(async (message) => {
+        await refreshStoredData(area);
+        return message;
+      })
       .then(
-        () => {
+        (message) => {
           close(kind === 'all' ? 'erase-all' : 'erase-bookmarks');
-          announce(kind === 'all' ? 'All Folio data erased.' : 'All bookmarks erased.');
+          announce(message);
         },
         (error: unknown) => announce(`Erase failed: ${String(error)}`),
       );

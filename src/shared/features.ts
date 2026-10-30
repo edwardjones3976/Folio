@@ -48,7 +48,9 @@ export function pageFeatures(snapshot: Snapshot | null, unavailableReason: strin
           ? 'No claude.ai conversation is open in this tab.'
           : snapshot?.state === 'no-messages'
             ? 'No messages were recognized on this page; claude.ai may have changed its layout.'
-            : unavailableReason;
+            : snapshot?.state === 'erased'
+              ? "Folio's index of this page was erased. Choose Re-index this page to read it again."
+              : unavailableReason;
     return [
       make('outline', 'Outline', 'blocked', reason),
       make('jump', 'Jump and highlight', 'blocked', reason),

@@ -103,6 +103,17 @@ describe('bookmarks', () => {
     assert.deepEqual(parseBookmarks('garbage'), { items: [], invalid: 1 });
   });
 
+  it('keeps a valid anchor context and drops a malformed one', async () => {
+    const area = new MemoryStorage();
+    const before = `human:${digest('prompt')}`;
+    const withContext = newBookmark();
+    withContext.anchor = { ...withContext.anchor, context: { before, after: null } };
+    assert.deepEqual((await addBookmark(area, withContext, NOW, 'ok')).anchor.context, { before, after: null });
+    const tampered = newBookmark();
+    tampered.anchor = { ...tampered.anchor, context: { before: 'javascript:alert(1)', after: null } };
+    assert.equal((await addBookmark(area, tampered, NOW, 'bad')).anchor.context, undefined);
+  });
+
   it('only ever builds https://claude.ai/chat/<id> URLs from validated ids', () => {
     assert.equal(conversationUrl(CONV), `https://claude.ai/chat/${CONV}`);
     assert.equal(conversationUrl('../../evil'), null);
@@ -115,6 +126,54 @@ describe('bookmarks', () => {
     area.failNextSet = true;
     await assert.rejects(addBookmark(area, newBookmark(), NOW, 'id-1'), /quota/);
     assert.equal((await loadBookmarks(area)).items.length, 0);
+  });
+});
+
+describe('records that failed validation are never dropped by ordinary writes (review finding 5)', () => {
+  const INVALID = { id: 'broken', title: 42, note: ['kept as found'] };
+
+  async function storeWithInvalid(): Promise<MemoryStorage> {
+    const area = new MemoryStorage();
+    await addBookmark(area, newBookmark(), NOW, 'good-1');
+    const store = area.data[BOOKMARKS_KEY] as { items: unknown[] };
+    store.items.unshift(structuredClone(INVALID));
+    (store as Record<string, unknown>).exportedBy = 'another tool';
+    return area;
+  }
+
+  const stored = (area: MemoryStorage) => area.data[BOOKMARKS_KEY] as { items: { id: unknown }[]; exportedBy?: string };
+
+  it('add keeps the invalid record, in place and unchanged', async () => {
+    const area = await storeWithInvalid();
+    await addBookmark(area, newBookmark(), NOW, 'good-2');
+    assert.deepEqual(stored(area).items[0], INVALID);
+    assert.deepEqual(stored(area).items.map((b) => b.id), ['broken', 'good-1', 'good-2']);
+    assert.equal(stored(area).exportedBy, 'another tool');
+    assert.equal((await loadBookmarks(area)).invalid, 1);
+  });
+
+  it('update keeps the invalid record', async () => {
+    const area = await storeWithInvalid();
+    assert.equal((await updateBookmark(area, 'good-1', { note: 'edited' }, NOW))?.note, 'edited');
+    assert.deepEqual(stored(area).items[0], INVALID);
+    assert.equal(stored(area).items.length, 2);
+  });
+
+  it('delete removes only the chosen bookmark', async () => {
+    const area = await storeWithInvalid();
+    assert.equal(await deleteBookmark(area, 'good-1'), true);
+    assert.deepEqual(stored(area).items, [INVALID]);
+    assert.equal(await deleteBookmark(area, 'broken'), false, 'an invalid record is not deleted by id');
+    assert.deepEqual(stored(area).items, [INVALID]);
+  });
+
+  it('refuses to overwrite a stored value that is unreadable as a whole', async () => {
+    const area = new MemoryStorage();
+    area.data[BOOKMARKS_KEY] = 'corrupted';
+    await assert.rejects(addBookmark(area, newBookmark(), NOW, 'id-1'), /unreadable/);
+    assert.equal(area.data[BOOKMARKS_KEY], 'corrupted');
+    await eraseBookmarks(area);
+    assert.equal(BOOKMARKS_KEY in area.data, false, 'only an explicit erase removes it');
   });
 });
 

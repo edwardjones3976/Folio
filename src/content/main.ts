@@ -5,13 +5,15 @@
 // - Never reads cookies, storage of the page, form fields or the message composer.
 // - Makes no network requests. It talks only to Folio's own side panel, over a
 //   port the panel opens; it never messages a panel that is not open.
+// - "Erase all Folio data" empties the in-memory index, including messages seen
+//   earlier; it stays empty until the user re-indexes or the page path changes.
 import { claudeAdapter } from '../adapters/claude.ts';
-import { PING, PORT_NAME, isPanelRequest } from '../shared/protocol.ts';
+import { ERASE_INDEX, PING, PORT_NAME, isPanelRequest } from '../shared/protocol.ts';
 import type { ContentPush, ContentReply, PanelRequest, PingReply } from '../shared/protocol.ts';
 import { search } from '../shared/search.ts';
 import { SETTINGS_KEY, parseSettings } from '../shared/storage.ts';
 import { computeCoverage } from '../shared/coverage.ts';
-import type { Snapshot } from '../shared/types.ts';
+import type { Resolution, Snapshot } from '../shared/types.ts';
 import { LiveIndex } from './indexer.ts';
 import { clearHighlights, jumpTo } from './navigate.ts';
 
@@ -26,21 +28,38 @@ let enabled = false;
 let observer: MutationObserver | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 let maxWaitTimer: ReturnType<typeof setTimeout> | undefined;
+/** Page path at "Erase all Folio data"; while set, the index stays empty. */
+let erasedPath: string | null = null;
 
-function disabledSnapshot(): Snapshot {
+const ERASED_NOTE = "Folio's index of this page was erased. Choose Re-index this page in the Folio panel to read it again.";
+const ERASED_RESOLUTION: Resolution = { status: 'unresolved', reason: 'not-loaded', note: ERASED_NOTE };
+
+/** True while the erase pause applies; it ends when the page moves to another path. */
+function erased(): boolean {
+  if (erasedPath !== null && erasedPath !== location.pathname) erasedPath = null;
+  return erasedPath !== null;
+}
+
+/** The only way the index is (re)built from the page. */
+function refreshIndex(): boolean {
+  return enabled && !erased() && index.refresh();
+}
+
+function emptySnapshot(state: 'disabled' | 'erased', label: string): Snapshot {
   return {
     provider: 'claude.ai',
-    state: 'disabled',
+    state,
     conversation: null,
     messages: [],
     coverage: computeCoverage([], []),
-    strategy: { id: 'none', label: 'Folio is turned off for claude.ai', stable: true },
+    strategy: { id: 'none', label, stable: true },
     revision: -1,
   };
 }
 
 function currentSnapshot(): Snapshot {
-  return enabled ? index.snapshot() : disabledSnapshot();
+  if (!enabled) return emptySnapshot('disabled', 'Folio is turned off for claude.ai');
+  return erased() ? emptySnapshot('erased', 'Index erased') : index.snapshot();
 }
 
 function broadcast(): void {
@@ -59,7 +78,7 @@ function runRefresh(): void {
   clearTimeout(maxWaitTimer);
   debounceTimer = undefined;
   maxWaitTimer = undefined;
-  if (enabled && index.refresh()) broadcast();
+  if (refreshIndex()) broadcast();
 }
 
 function scheduleRefresh(): void {
@@ -72,7 +91,7 @@ function scheduleRefresh(): void {
 function enable(): void {
   if (enabled) return;
   enabled = true;
-  index.refresh();
+  refreshIndex();
   observer = new MutationObserver(scheduleRefresh);
   observer.observe(document.documentElement, {
     childList: true,
@@ -90,6 +109,17 @@ function disable(): void {
   observer?.disconnect();
   observer = null;
   window.removeEventListener('popstate', scheduleRefresh);
+  clearTimeout(debounceTimer);
+  clearTimeout(maxWaitTimer);
+  maxWaitTimer = undefined;
+  index.clear();
+  clearHighlights(document);
+  broadcast();
+}
+
+/** "Erase all Folio data": forget everything indexed, including messages virtualization removed. */
+function eraseIndex(): void {
+  erasedPath = location.pathname;
   clearTimeout(debounceTimer);
   clearTimeout(maxWaitTimer);
   maxWaitTimer = undefined;
@@ -122,12 +152,27 @@ function handle(port: chrome.runtime.Port, request: PanelRequest): void {
     reply(port, { type: 'error', requestId, message: 'Folio is turned off for claude.ai. Turn it on in Settings.' });
     return;
   }
-  if (index.refresh()) broadcast();
+  if (request.type === 'reindex') {
+    erasedPath = null;
+    index.clear();
+    refreshIndex();
+    broadcast();
+    reply(port, { type: 'reindex', requestId });
+    return;
+  }
+  if (refreshIndex()) broadcast();
+  const isErased = erased();
   switch (request.type) {
     case 'jump': {
+      if (isErased) {
+        reply(port, { type: 'jump', requestId, result: { status: 'unresolved', note: ERASED_NOTE } });
+        return;
+      }
       const { resolution, message } = index.locate(request.anchor);
-      if (!message || resolution.status === 'unresolved') {
-        reply(port, { type: 'jump', requestId, result: { status: 'unresolved', note: resolution.note ?? 'Not found.' } });
+      // Only an exact or changed match navigates; ambiguous and unresolved targets are labelled instead.
+      if (!message || (resolution.status !== 'exact' && resolution.status !== 'changed')) {
+        const status = resolution.status === 'ambiguous' ? 'ambiguous' : 'unresolved';
+        reply(port, { type: 'jump', requestId, result: { status, note: resolution.note ?? 'Not found.' } });
         return;
       }
       const outcome = jumpTo(document, message, {
@@ -152,9 +197,10 @@ function handle(port: chrome.runtime.Port, request: PanelRequest): void {
     case 'search': {
       const result = search(index.searchDocs(), String(request.query));
       const notLoaded = result.searchedNotLoaded > 0 ? ` and ${result.searchedNotLoaded} seen earlier but no longer loaded` : '';
-      const coverage =
-        `Searched ${result.searchedLoaded} messages loaded in this page${notLoaded}. ` +
-        'Not searched: messages claude.ai has not loaded, other branch versions, images, files and artifacts.';
+      const coverage = isErased
+        ? `Nothing was searched. ${ERASED_NOTE}`
+        : `Searched ${result.searchedLoaded} messages loaded in this page${notLoaded}. ` +
+          'Not searched: messages claude.ai has not loaded, other branch versions, images, files and artifacts.';
       reply(port, { type: 'search', requestId, result, coverage });
       return;
     }
@@ -165,7 +211,7 @@ function handle(port: chrome.runtime.Port, request: PanelRequest): void {
       reply(port, {
         type: 'resolve',
         requestId,
-        results: request.anchors.slice(0, 500).map((anchor) => index.locate(anchor).resolution),
+        results: request.anchors.slice(0, 500).map((anchor) => (isErased ? ERASED_RESOLUTION : index.locate(anchor).resolution)),
       });
       return;
   }
@@ -185,13 +231,19 @@ chrome.runtime.onConnect.addListener((port) => {
   });
   // Before settings load, applySettings() will broadcast the first snapshot.
   if (!settingsLoaded) return;
-  if (enabled && index.refresh()) broadcast();
+  if (refreshIndex()) broadcast();
   else reply(port, { type: 'snapshot', snapshot: currentSnapshot() });
 });
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return undefined;
-  if ((message as { type?: unknown } | null)?.type !== PING) return undefined;
+  const type = (message as { type?: unknown } | null)?.type;
+  if (type === ERASE_INDEX) {
+    eraseIndex();
+    sendResponse({ ok: true });
+    return undefined;
+  }
+  if (type !== PING) return undefined;
   const state = settingsLoaded ? currentSnapshot().state : 'starting';
   const response: PingReply = { ok: true, provider: 'claude.ai', url: location.href, state };
   sendResponse(response);

@@ -2,7 +2,7 @@
 import { NOTE_MAX, TITLE_MAX } from '../shared/storage.ts';
 import type { Bookmark } from '../shared/storage.ts';
 import type { Resolution } from '../shared/types.ts';
-import { clear, formatDate, h } from './dom.ts';
+import { formatDate, h } from './dom.ts';
 
 export interface BookmarkActions {
   open(bookmark: Bookmark): void;
@@ -18,6 +18,8 @@ export function describeCheck(check: BookmarkCheck): { text: string; tone: 'ok' 
       return { text: 'Found in this page', tone: 'ok' };
     case 'changed':
       return { text: `Found, but changed: ${check.note}`, tone: 'warn' };
+    case 'ambiguous':
+      return { text: `Ambiguous: ${check.note}`, tone: 'warn' };
     case 'unresolved':
       if (check.reason === 'other-conversation') return { text: 'In another conversation (Open will navigate there)', tone: 'muted' };
       return { text: `Unresolved: ${check.note}`, tone: 'warn' };
@@ -69,7 +71,16 @@ export function renderBookmarks(
   editingId: string | null,
   setEditing: (id: string | null) => void,
 ): void {
-  clear(list);
+  // Live updates (snapshots, bookmark checks) re-render this list often. An open
+  // editor stays the same DOM node, never detached, so its draft and focus survive.
+  const kept =
+    editingId === null
+      ? null
+      : (Array.from(list.children).find(
+          (li): li is HTMLElement => li instanceof HTMLElement && li.dataset.bookmarkId === editingId && li.querySelector('.bookmark-editor') !== null,
+        ) ?? null);
+  for (const child of Array.from(list.children)) if (child !== kept) child.remove();
+  let keptPlaced = false;
   const visible = items
     .filter((b) => !scope.onlyCurrent || b.conversation.id === scope.conversationId)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -84,11 +95,9 @@ export function renderBookmarks(
   for (const bookmark of visible) {
     const check = checks.get(bookmark.id) ?? { status: 'unchecked' as const, note: 'Not checked (open its conversation to check).' };
     const state = describeCheck(check);
-    const item = h(
-      'li',
-      { class: 'bookmark', 'data-bookmark-id': bookmark.id },
+    const details: HTMLElement[] = [
       h('h3', { class: 'bookmark-title', text: bookmark.title }),
-      bookmark.note ? h('p', { class: 'bookmark-note', text: bookmark.note }) : null,
+      ...(bookmark.note ? [h('p', { class: 'bookmark-note', text: bookmark.note })] : []),
       h(
         'p',
         { class: 'bookmark-meta' },
@@ -96,7 +105,15 @@ export function renderBookmarks(
         h('time', { datetime: bookmark.createdAt, text: formatDate(bookmark.createdAt) }),
       ),
       h('p', { class: `bookmark-status ${state.tone}`, 'data-status': check.status, text: state.text }),
-    );
+    ];
+    if (kept && bookmark.id === editingId) {
+      // Refresh the saved details around the open editor; leave the editor untouched.
+      for (const child of Array.from(kept.children)) if (!child.classList.contains('bookmark-editor')) child.remove();
+      kept.prepend(...details);
+      keptPlaced = true;
+      continue;
+    }
+    const item = h('li', { class: 'bookmark', 'data-bookmark-id': bookmark.id }, ...details);
     if (editingId === bookmark.id) {
       item.append(editor(bookmark, actions, () => setEditing(null)));
     } else {
@@ -108,6 +125,8 @@ export function renderBookmarks(
       remove.addEventListener('click', () => actions.remove(bookmark));
       item.append(h('div', { class: 'row actions' }, open, edit, remove));
     }
-    list.append(item);
+    if (kept && !keptPlaced) list.insertBefore(item, kept);
+    else list.append(item);
   }
+  if (kept && !keptPlaced) kept.remove();
 }

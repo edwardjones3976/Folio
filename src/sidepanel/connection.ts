@@ -1,7 +1,7 @@
 // Connects the side panel to Folio's content script in one browser tab.
 // The panel opens the port; the content script only answers on it. When the tab
 // navigates or reloads the port closes and the panel reconnects.
-import { PORT_NAME } from '../shared/protocol.ts';
+import { ERASE_INDEX, PORT_NAME } from '../shared/protocol.ts';
 import type { ContentPush, ContentReply, PanelRequest } from '../shared/protocol.ts';
 import type { Snapshot } from '../shared/types.ts';
 
@@ -16,6 +16,19 @@ export type RequestBody = DistributiveOmit<PanelRequest, 'requestId'>;
 export const UNAVAILABLE_DETAIL =
   'Folio is not running in this tab. It works only on https://claude.ai/ pages. ' +
   'If this claude.ai tab was open before Folio was installed or updated, reload the tab.';
+
+/**
+ * Tells Folio's content script in every open tab to empty its in-memory index.
+ * Tabs without the content script (anything that is not claude.ai) reject the
+ * message and are skipped. Returns how many tabs confirmed.
+ */
+export async function eraseIndexesInAllTabs(): Promise<number> {
+  const tabs = await chrome.tabs.query({});
+  const replies = await Promise.allSettled(
+    tabs.flatMap((tab) => (tab.id === undefined ? [] : [chrome.tabs.sendMessage(tab.id, { type: ERASE_INDEX })])),
+  );
+  return replies.filter((r) => r.status === 'fulfilled' && (r.value as { ok?: unknown } | undefined)?.ok === true).length;
+}
 
 const RETRY_DELAYS_MS = [200, 400, 800, 1600, 3200];
 const REQUEST_TIMEOUT_MS = 8000;

@@ -19,7 +19,7 @@ import type { Bookmark, Settings } from '../shared/storage.ts';
 import type { JumpResult, MessageAnchor, MessageSummary, Snapshot } from '../shared/types.ts';
 import { renderBookmarks } from './bookmarks-view.ts';
 import type { BookmarkCheck } from './bookmarks-view.ts';
-import { TabConnection, UNAVAILABLE_DETAIL } from './connection.ts';
+import { TabConnection, UNAVAILABLE_DETAIL, eraseIndexesInAllTabs } from './connection.ts';
 import type { ConnectionState } from './connection.ts';
 import { announce, arrowNavigation, byId, clear, h } from './dom.ts';
 import { renderOutline } from './outline.ts';
@@ -72,6 +72,11 @@ function pageStatus(): { text: string; state: string } {
         text: 'No messages were recognized on this page. claude.ai may still be loading or may have changed its layout; Folio will not guess.',
         state: 'blocked',
       };
+    case 'erased':
+      return {
+        text: "Folio's index of this page was erased. Nothing from it is searchable. Choose Re-index this page to read the loaded messages again.",
+        state: 'blocked',
+      };
     case 'ready':
       return { text: s.coverage.statement, state: s.coverage.level === 'partial' || !s.strategy.stable ? 'partial' : 'ok' };
   }
@@ -84,6 +89,7 @@ function renderStatus(): void {
 
   const s = snapshot();
   byId('conversation-title').textContent = s?.conversation ? s.conversation.title : '';
+  byId('reindex').hidden = s?.state !== 'erased';
 
   const features = pageFeatures(s, connectionState.kind === 'unavailable' ? UNAVAILABLE_DETAIL : 'Not connected to a claude.ai tab yet.');
   const chips = byId('feature-chips');
@@ -183,7 +189,10 @@ async function bookmarkMessage(exchange: Exchange, message: MessageSummary): Pro
 async function runSearch(query: string): Promise<void> {
   const summary = byId('search-summary');
   if (!readySnapshot()) {
-    summary.textContent = 'Search needs an open claude.ai conversation with Folio turned on.';
+    summary.textContent =
+      snapshot()?.state === 'erased'
+        ? "Folio's index of this page was erased. Choose Re-index this page to search it again."
+        : 'Search needs an open claude.ai conversation with Folio turned on.';
     clear(byId('search-results'));
     return;
   }
@@ -246,6 +255,7 @@ async function reloadBookmarks(): Promise<void> {
   const parsed = await loadBookmarks(area);
   bookmarks = parsed.items;
   invalidBookmarks = parsed.invalid;
+  if (editingBookmark !== null && !bookmarks.some((b) => b.id === editingBookmark)) editingBookmark = null;
   renderBookmarksView();
   scheduleChecks();
 }
@@ -311,7 +321,9 @@ function recordJumpCheck(bookmark: Bookmark, result: JumpResult): void {
       ? { status: 'exact', index: 0 }
       : result.status === 'jumped-changed'
         ? { status: 'changed', index: 0, note: result.note }
-        : { status: 'unresolved', reason: 'not-found', note: result.note };
+        : result.status === 'ambiguous'
+          ? { status: 'ambiguous', note: result.note }
+          : { status: 'unresolved', reason: 'not-found', note: result.note };
   checks.set(bookmark.id, check);
   renderBookmarksView();
 }
@@ -333,7 +345,8 @@ async function continuePendingOpen(): Promise<void> {
   try {
     const reply = await connection.request({ type: 'jump', anchor: pending.bookmark.anchor });
     if (reply.type !== 'jump') return;
-    if (reply.result.status === 'unresolved' && Date.now() - pending.startedAt < PENDING_RETRY_MS) return; // messages may still be loading
+    const found = reply.result.status === 'jumped' || reply.result.status === 'jumped-changed';
+    if (!found && Date.now() - pending.startedAt < PENDING_RETRY_MS) return; // messages (and their neighbours) may still be loading
     pendingOpen = null;
     report(describeJump(reply.result, description));
     recordJumpCheck(pending.bookmark, reply.result);
@@ -341,6 +354,28 @@ async function continuePendingOpen(): Promise<void> {
     // retried on the next snapshot
   } finally {
     pending.busy = false;
+  }
+}
+
+// --- Erase and re-index ----------------------------------------------------------
+
+/** After "Erase all": drop what this panel holds from the page, then empty the live index in every open tab. */
+async function forgetIndexes(): Promise<number> {
+  clear(byId('search-results'));
+  byId('search-summary').textContent = '';
+  byId('search-coverage').textContent = '';
+  checks = new Map();
+  pendingOpen = null;
+  editingBookmark = null;
+  return eraseIndexesInAllTabs();
+}
+
+async function reindex(): Promise<void> {
+  try {
+    await connection.request({ type: 'reindex' });
+    report('Re-indexed the messages loaded in this page.');
+  } catch (error) {
+    report(`Could not re-index this page. ${(error as Error).message}`);
   }
 }
 
@@ -408,7 +443,8 @@ const connection = new TabConnection(pinnedTabId(), onConnectionState);
 
 async function main(): Promise<void> {
   initTabs();
-  initSettings(area);
+  initSettings(area, forgetIndexes);
+  byId('reindex').addEventListener('click', () => void reindex());
   arrowNavigation(byId('outline-list'), '[data-nav="outline"]');
   arrowNavigation(byId('search-results'), '[data-nav="results"]');
 

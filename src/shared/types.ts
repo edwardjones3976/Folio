@@ -34,7 +34,7 @@ export interface MessageSummary {
   role: Role;
   /** Content digest of the normalized message text. */
   digest: string;
-  /** How many earlier loaded messages share role and digest (duplicate disambiguation). */
+  /** How many earlier known messages (loaded or seen earlier) share role and digest; keeps keys unique. */
   occurrence: number;
   /** Position in the merged list (loaded + seen-earlier messages). */
   seq: number;
@@ -87,7 +87,8 @@ export interface DiscoveryStrategy {
   stable: boolean;
 }
 
-export type PageState = 'ready' | 'disabled' | 'no-conversation' | 'no-messages';
+/** 'erased': "Erase all Folio data" emptied the index; it stays empty until the user re-indexes or the page changes. */
+export type PageState = 'ready' | 'disabled' | 'no-conversation' | 'no-messages' | 'erased';
 
 export interface Snapshot {
   provider: 'claude.ai';
@@ -100,28 +101,48 @@ export interface Snapshot {
   revision: number;
 }
 
+/**
+ * The messages around an anchored message, as `${role}:${digest}` of the
+ * previous and next message Folio knew when the anchor was made (null: none
+ * known). Like the prefix and suffix of a W3C TextQuoteSelector, this tells
+ * identical messages apart.
+ */
+export interface AnchorContext {
+  before: string | null;
+  after: string | null;
+}
+
 /** Stable, source-specific reference to one message (used by outline jumps and bookmarks). */
 export interface MessageAnchor {
   provider: 'claude.ai';
   conversationId: string;
   role: Role;
   digest: string;
+  /** Earlier known messages with the same role and digest when saved (informational; not used to resolve). */
   occurrence: number;
-  /** Ordinal when the anchor was made; only a tie-breaker, never trusted alone. */
+  /** Ordinal when the anchor was made (informational; never used to resolve). */
   ordinal: number;
   /** Start of the normalized message text, for detecting changed messages. */
   prefix: string;
+  /** Missing on anchors saved by Folio 0.1.0 before context was recorded. */
+  context?: AnchorContext;
   headingIndex?: number;
   headingText?: string;
 }
 
+/**
+ * 'exact' and 'changed' identify one message. 'ambiguous': messages with the
+ * saved text are loaded, but Folio cannot tell which one was saved. Jumps never
+ * navigate on 'ambiguous' or 'unresolved'.
+ */
 export type Resolution =
   | { status: 'exact'; index: number; note?: string }
   | { status: 'changed'; index: number; note: string }
-  | { status: 'unresolved'; reason: 'not-loaded' | 'not-found' | 'ambiguous' | 'other-conversation'; note: string };
+  | { status: 'ambiguous'; note: string }
+  | { status: 'unresolved'; reason: 'not-loaded' | 'not-found' | 'other-conversation'; note: string };
 
 export interface JumpResult {
-  status: 'jumped' | 'jumped-changed' | 'unresolved';
+  status: 'jumped' | 'jumped-changed' | 'ambiguous' | 'unresolved';
   note: string;
   /** Present when the target heading could not be matched and the message itself was used. */
   headingFallback?: boolean;

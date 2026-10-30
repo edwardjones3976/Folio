@@ -7,7 +7,7 @@ import { fixtureHtmlForPath, fixtureId, fixtureUrl } from '../../fixtures/claude
 import type { FixtureName } from '../../fixtures/claude/index.ts';
 import { NEEDLE_EXCHANGE, NEEDLE_PHRASE } from '../../fixtures/claude/long.ts';
 import { build } from '../../src/tools/build.mjs';
-import { Browser } from './cdp.ts';
+import { Browser, sleep } from './cdp.ts';
 import type { Page, Session } from './cdp.ts';
 
 let browser: Browser;
@@ -250,6 +250,56 @@ describe('P0 stories on a loaded conversation (synthetic)', () => {
     assert.ok(item.updatedAt >= item.createdAt);
   });
 
+  it('Bookmark: a snapshot arriving during an edit keeps the draft and focus (review finding 4)', async () => {
+    await click('.bookmark [data-action="edit"]');
+    await panel.evaluate(() => {
+      const form = document.querySelector<HTMLFormElement>('.bookmark-editor')!;
+      const note = form.querySelector('textarea')!;
+      form.querySelector('input')!.value = 'Draft title, not saved yet';
+      note.value = 'Draft note typed while Claude was replying';
+      note.focus();
+      note.setSelectionRange(5, 5);
+      for (const el of [note, document.querySelector('.bookmark-status')!]) (el as unknown as { folioMark: boolean }).folioMark = true;
+    });
+    // A new message in the page makes the content script push a new snapshot,
+    // which re-renders the panel and re-checks the bookmarks.
+    await page.evaluate(() => {
+      const turn = document.createElement('div');
+      turn.setAttribute('data-test-render-count', '1');
+      const prompt = document.createElement('div');
+      prompt.setAttribute('data-testid', 'user-message');
+      prompt.textContent = 'A prompt sent while a bookmark was being edited';
+      turn.append(prompt);
+      document.querySelector('.conversation')!.append(turn);
+    });
+    await waitPanel(() => document.getElementById('outline-summary')!.textContent!.includes('13 messages'), [], 'snapshot with the new message');
+    await waitPanel(
+      () => !(document.querySelector('.bookmark-status') as unknown as { folioMark?: boolean } | null)?.folioMark,
+      [],
+      'bookmark list re-rendered by the snapshot and check',
+    );
+    const editor = await panel.evaluate<{ title: string; note: string; sameNode: boolean; focused: boolean; caret: number }>(() => {
+      const form = document.querySelector<HTMLFormElement>('.bookmark-editor')!;
+      const note = form.querySelector('textarea')!;
+      return {
+        title: form.querySelector('input')!.value,
+        note: note.value,
+        sameNode: (note as unknown as { folioMark?: boolean }).folioMark === true,
+        focused: document.activeElement === note,
+        caret: note.selectionStart,
+      };
+    });
+    assert.deepEqual(editor, { title: 'Draft title, not saved yet', note: 'Draft note typed while Claude was replying', sameNode: true, focused: true, caret: 5 });
+    assert.equal(await text('.bookmark-status'), 'Found in this page', 'the saved details around the editor are still refreshed');
+
+    await click('.bookmark-editor .cancel');
+    await waitPanel(
+      () => document.querySelector('.bookmark-title')?.textContent === 'Parts list for the drip system' && !document.querySelector('.bookmark-editor'),
+      [],
+      'editor closed, saved title kept',
+    );
+  });
+
   it('Bookmark: reopens its conversation from another chat and jumps to the saved reply', async () => {
     await showFixture('partial');
     assert.equal(await panel.evaluate(() => document.getElementById('status')!.dataset.state), 'partial');
@@ -386,6 +436,81 @@ describe('settings', () => {
       [],
       'defaults restored',
     );
+  });
+});
+
+describe('erase all forgets the live index (review finding 3)', () => {
+  interface PortSearch {
+    total: number;
+    hits: { rendered: boolean }[];
+    searchedLoaded: number;
+    searchedNotLoaded: number;
+    coverage: string;
+  }
+
+  /** Searches the content script's index directly over a panel port, bypassing the panel UI. */
+  const searchIndex = (query: string) =>
+    panel.evaluate<PortSearch>(
+      (id: number, q: string) =>
+        new Promise((resolve, reject) => {
+          const port = chrome.tabs.connect(id, { name: 'folio-panel' });
+          const timer = setTimeout(() => reject(new Error('no search reply')), 5000);
+          port.onMessage.addListener((message: { type: string; result?: { total: number; hits: { rendered: boolean }[]; searchedLoaded: number; searchedNotLoaded: number }; coverage?: string; message?: string }) => {
+            if (message.type === 'snapshot') return;
+            clearTimeout(timer);
+            port.disconnect();
+            if (message.type !== 'search') reject(new Error(message.message ?? message.type));
+            else resolve({ ...message.result!, coverage: message.coverage! });
+          });
+          port.postMessage({ type: 'search', requestId: 1, query: q });
+        }),
+      tabId,
+      query,
+    );
+
+  it('previously seen text, including virtualized-away messages, is no longer searchable after Erase all', async () => {
+    await showFixture('long');
+    await page.evaluate(() => {
+      for (const turn of Array.from(document.querySelectorAll('[data-test-render-count]')).slice(0, 200)) turn.remove();
+    });
+    await waitPanel(() => /plus 200 seen earlier/.test(document.getElementById('status-text')!.textContent!), [], 'virtualized messages');
+    const virtualized = await searchIndex('"Step 6:"');
+    assert.deepEqual([virtualized.total, virtualized.hits[0]?.rendered], [1, false], 'seen earlier, no longer loaded, still searchable before erase');
+    assert.equal((await searchIndex(`"${NEEDLE_PHRASE}"`)).total, 1);
+
+    await selectTab('settings');
+    await click('#erase-all');
+    await click('#erase-confirm-yes');
+    await waitPanel(async () => Object.keys(await chrome.storage.local.get(null)).length === 0, [], 'storage erased');
+    const announced = await waitPanel<string>(
+      () => /^All Folio data erased/.test(document.getElementById('announcer')!.textContent!) && document.getElementById('announcer')!.textContent,
+      [],
+      'erase announcement',
+    );
+    for (const query of ['"Step 6:"', `"${NEEDLE_PHRASE}"`, 'step']) {
+      const after = await searchIndex(query);
+      assert.deepEqual([after.total, after.searchedLoaded, after.searchedNotLoaded], [0, 0, 0], query);
+      assert.match(after.coverage, /^Nothing was searched\. Folio's index of this page was erased\./);
+    }
+    assert.equal(announced, 'All Folio data erased: bookmarks, settings, and the index in 1 open claude.ai tab.');
+    await waitPanel(() => /index of this page was erased/.test(document.getElementById('status-text')!.textContent!), [], 'erased status');
+    assert.equal(await panel.evaluate(() => document.getElementById('reindex')!.hidden), false);
+    assert.equal(await text('#feature-chips li[data-feature="search"]'), 'Search: blocked');
+    assert.equal(await panel.evaluate(() => document.querySelectorAll('#outline-list li, #search-results li').length), 0);
+    // Page changes do not quietly rebuild the index.
+    await page.evaluate(() => document.querySelector('[data-test-render-count]')!.remove());
+    await sleep(1500);
+    assert.equal((await searchIndex('step')).total, 0);
+    const ping = await panel.evaluate<{ state: string }>((id: number) => chrome.tabs.sendMessage(id, { type: 'folio:ping' }), tabId);
+    assert.equal(ping.state, 'erased');
+
+    await click('#reindex');
+    await waitPanel(() => document.querySelector('#outline-list .exchange') && document.getElementById('reindex')!.hidden, [], 're-indexed');
+    const reindexed = await searchIndex('"Step 6:"');
+    assert.equal(reindexed.total, 0, 'virtualized-away text is gone for good');
+    assert.equal(reindexed.searchedNotLoaded, 0);
+    assert.equal(reindexed.searchedLoaded, 299);
+    assert.equal((await searchIndex(`"${NEEDLE_PHRASE}"`)).hits[0]?.rendered, true, 'loaded messages are searchable again');
   });
 });
 

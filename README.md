@@ -27,11 +27,11 @@ table below describes what is built.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Outline of exchanges | working | One entry per prompt and its replies. Labels are the first line of the prompt, as written. Headings from Claude's replies are listed under each entry. Entries that are not loaded in the page are labelled. |
-| Exact jump and highlight | working | Scrolls the original message (or heading) into view and outlines it for 4 seconds. Targets are matched by content, not position; unloaded or changed targets are reported, not guessed. |
+| Exact jump and highlight | working | Scrolls the original message (or heading) into view and outlines it for 4 seconds. Targets are matched by their text and the messages around them, never by position. Unloaded, ambiguous or changed targets are reported, not guessed. |
 | Local search | working | Case-insensitive; every word must appear; `"quotes"` for a phrase. Results show the exchange number, the speaker, a snippet and a statement of what was searched. Clicking a result jumps to it and highlights the term. |
-| Bookmarks | working | Saved locally with title, note and timestamps. Open re-opens the same chat and jumps to the message. Anchors that no longer resolve are labelled "Unresolved". |
+| Bookmarks | working | Saved locally with title, note and timestamps. Open re-opens the same chat and jumps to the message. Anchors that no longer resolve are labelled "Unresolved"; identical messages Folio cannot tell apart are labelled "Ambiguous", and Open does not jump to them. Live updates never discard an open edit. |
 | Coverage indicators | working | Reports loading indicators, a conversation that starts mid-way, edited/retried versions (only the shown version is indexed), messages without readable text, messages removed from the page by virtualization, and fallback detection. |
-| Settings | working | Enable/disable on claude.ai, theme (system, light, dark, high contrast), text size, inspect stored data, download it as JSON, erase bookmarks or everything. |
+| Settings | working | Enable/disable on claude.ai, theme (system, light, dark, high contrast), text size, inspect stored data, download it as JSON, erase bookmarks or everything (including what Folio has indexed in open claude.ai tabs). |
 | Keyboard access | working | See [Keyboard](#keyboard). All controls are native buttons, inputs and ARIA tabs with labels; results are announced in a live region. |
 | Chapters | partial | Deterministic structure only (exchanges and reply headings). No topic detection and no user-edited chapters. |
 | Archive, book view, export of conversations | not_implemented | Planned for P1. |
@@ -39,7 +39,7 @@ table below describes what is built.
 
 When the page cannot be used, the panel marks outline, jump and search as
 `blocked` and says why: Folio is turned off, no conversation is open, no messages
-were recognized, or the tab is not a claude.ai page. When detection fell back to
+were recognized, the page's index was erased, or the tab is not a claude.ai page. When detection fell back to
 CSS class names or coverage is partial, they show as `partial`.
 
 ## Permissions
@@ -72,13 +72,20 @@ All code ships in the package; nothing is loaded remotely.
   - `folio.settings`: enabled, theme, text size, show headings.
   - `folio.bookmarks`: for each bookmark, its title, note, created/updated times,
     the conversation id and title, the exchange number, and an anchor: role,
-    content digest, occurrence, position, and **up to 160 characters from the
+    content digest, occurrence, position, the content digests (not the text) of
+    the messages just before and after it, and **up to 160 characters from the
     start of the bookmarked message** (used to recognize the message again).
+    Stored records that fail validation are ignored but kept exactly as found;
+    adding, editing or deleting bookmarks never removes them, only an erase does.
   - Nothing else. Conversation text otherwise stays in memory while the page is
     open and is gone when the tab closes.
 - **Inspect, export and delete.** Settings, then Stored data shows exactly what is
-  stored, unfiltered, and can download it as JSON. Erase bookmarks or Erase all
-  Folio data removes it. Removing the extension also removes its storage.
+  stored, unfiltered, and can download it as JSON. Erase bookmarks removes the
+  bookmarks. Erase all Folio data removes everything stored and also empties the
+  in-memory index in every open claude.ai tab, including messages seen earlier
+  and no longer loaded. That index stays empty until you choose **Re-index this
+  page** or the tab moves to another page. Removing the extension also removes
+  its storage.
 
 ## Install from source
 
@@ -133,13 +140,23 @@ interface (`src/adapters/types.ts`):
 - If those attributes are missing, it falls back to the class names
   `.font-user-message`, `.font-claude-response` and `.font-claude-message`. It
   reports the fallback, and the features show as `partial`.
-- Each message gets a content digest and an occurrence count. Jumps and
-  bookmarks resolve by digest. If the text changed, a long unique matching
-  opening counts as "changed". Otherwise the target is unresolved. Position is
-  only a tie-breaker and is never trusted alone.
+- Each message gets a content digest. An anchor (for jumps and bookmarks) is the
+  digest plus the digests of the messages just before and after it, in the
+  manner of a W3C Web Annotation text quote selector (exact text plus prefix and
+  suffix). A target is **exact** only when the text matches and a neighbouring
+  message confirms it; a different previous message means a different message.
+  Identical messages that their neighbours cannot tell apart are **ambiguous**,
+  never exact. If the text changed, at least 24 identical opening characters
+  count as **changed**; shorter messages only ever match exactly. Otherwise the
+  target is **unresolved**. Position is never used. Folio never jumps to an
+  ambiguous or unresolved target.
 - Messages that disappear from the page at the top or bottom (virtualization) are
   kept as "not loaded". They stay searchable but cannot be jumped to until
-  claude.ai shows them again.
+  claude.ai shows them again. The loaded window is placed among the known
+  messages by its longest run of identical messages, and occurrence numbers are
+  counted over all known messages, so identical messages keep their identity as
+  the window slides. When two placements are equally good, Folio keeps only the
+  loaded messages rather than guess.
 
 These selectors follow how public open-source tools describe claude.ai. They
 have **not** been verified on live claude.ai for this build.
@@ -153,18 +170,22 @@ npm run test:browser   # real Chrome
 ```
 
 - `tests/unit/`: text and digest handling, search, outline grouping, coverage,
-  virtualization merge, anchor resolution, storage validation (including
-  corrupted records and write failures), feature statuses, the bundler, and a
-  static privacy and permission audit of the manifest, sources, bundles, README
-  and fixtures.
+  virtualization merge (including windows of identical messages), anchor
+  resolution (identical messages, partial pages, short messages), storage
+  validation (including corrupted records kept through add, edit and delete, and
+  write failures), feature statuses, the bundler, and a static privacy and
+  permission audit of the manifest, sources, bundles, README, docs and fixtures.
 - `tests/browser/adapter.test.ts`: runs the real adapter and index in Chrome on
-  every synthetic fixture: loaded, partially loaded, branched, edge cases, layout
-  drift, unrecognized, no conversation, and a 500-message conversation with
+  every synthetic fixture: loaded, partially loaded, branched, edge cases
+  (including identical prompts with part of the page removed), layout drift,
+  unrecognized, no conversation, and a 500-message conversation with
   virtualization.
 - `tests/browser/extension.test.ts`: loads the built `dist/` extension into Chrome
   and drives the real side panel (opened as a tab pinned with `?tabId=`) through
-  the P0 stories: open, jump, keyboard use, find, bookmark, settings, erase,
-  unusable pages and network silence.
+  the P0 stories: open, jump, keyboard use, find, bookmark (including a live
+  update during an edit), settings, erase (including a direct check that the
+  content script's index is empty afterwards), unusable pages and network
+  silence.
 
 The browser tests use a small built-in Chrome DevTools Protocol driver
 (`tests/browser/cdp.ts`) instead of Playwright, so the project needs no
@@ -178,8 +199,18 @@ executable.
 ## Known gaps
 
 - **Live claude.ai is unverified (UNKNOWN).** The adapter is modelled on described
-  markup, not checked on a live account. [`docs/MANUAL-LIVE-CHECK.md`](docs/MANUAL-LIVE-CHECK.md)
-  describes the manual check that is still to do.
+  markup, not checked on a live account. [`docs/MANUAL-LIVE-CHECK.html`](docs/MANUAL-LIVE-CHECK.html)
+  describes the manual check that is still to do. The latest completion report
+  is [`docs/P0-COMPLETION-REPORT.html`](docs/P0-COMPLETION-REPORT.html).
+- Folio cannot tell whether the first loaded message is the start of the
+  conversation, so it never uses "nothing before it" as evidence. A message at
+  the top of what is loaded is confirmed only by the message after it; if that
+  is not loaded or has changed (for example a regenerated reply), the target is
+  reported as ambiguous until more of the chat is loaded.
+- Bookmarks saved by Folio 0.1.0 have no neighbour context and are reported as
+  ambiguous. Bookmark the message again.
+- Erase all reaches the claude.ai tabs where Folio's content script is running.
+  Tabs that were open before Folio was installed have no Folio index to erase.
 - Folio indexes only what claude.ai has loaded in the page. It does not scroll,
   fetch or call claude.ai APIs to load more. Other edit/retry versions, images,
   files, artifacts and attachments are not indexed. Search text collapses
@@ -192,6 +223,9 @@ executable.
   that is not claude.ai opens a new tab.
 - Two panels in different windows editing bookmarks at the same moment could
   overwrite each other's change (last write wins).
+- If the stored bookmark value is unreadable as a whole (not a list of records),
+  Folio refuses to add or change bookmarks rather than overwrite it, and says
+  so. Download stored data to keep a copy, then use Erase bookmarks.
 - Not covered by automation: the real side-panel container and toolbar click (the
   tests check the panel behavior setting and drive `sidepanel.html` in a tab),
   screen-reader output, visual appearance of themes, whether the JSON download
@@ -214,7 +248,7 @@ src/shared/              provider-neutral logic: search, anchors, coverage, stor
 src/tools/               zero-dependency bundler, build and icon scripts
 fixtures/claude/         synthetic claude.ai fixtures (clearly labelled)
 tests/                   unit and real-browser tests
-docs/                    product contract, completion report, manual check
+docs/                    product contract, completion report, manual check (HTML)
 ```
 
 ## License

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { mergeLoaded } from '../../src/shared/merge.ts';
 
-const item = (key: string) => ({ key, rendered: true });
-const keys = (list: { key: string; rendered: boolean }[]) => list.map((i) => `${i.key}${i.rendered ? '' : '?'}`).join(' ');
+const item = (id: string) => ({ id, rendered: true });
+const keys = (list: { id: string; rendered: boolean }[]) => list.map((i) => `${i.id}${i.rendered ? '' : '?'}`).join(' ');
 
 describe('mergeLoaded', () => {
   it('starts from the loaded list', () => {
@@ -39,6 +39,19 @@ describe('mergeLoaded', () => {
   it('handles duplicate keys in order', () => {
     const known = mergeLoaded([], ['x', 'y', 'x2'].map(item));
     assert.equal(keys(mergeLoaded(known, ['y', 'x2'].map(item))), 'x? y x2');
+  });
+
+  it('places a window of duplicates by its longest matching run (review finding 1)', () => {
+    const known = mergeLoaded([], ['C', 'a1', 'C', 'a2', 'z'].map(item));
+    assert.equal(keys(mergeLoaded(known, ['C', 'a2', 'z'].map(item))), 'C? a1? C a2 z');
+    assert.equal(keys(mergeLoaded(known, ['C', 'a1'].map(item))), 'C a1 C? a2? z?');
+  });
+
+  it('keeps nothing outside the window when two placements are equally good', () => {
+    const known = mergeLoaded([], ['C', 'a', 'C', 'a'].map(item));
+    assert.equal(keys(mergeLoaded(known, ['C', 'a'].map(item))), 'C a');
+    const gapped = mergeLoaded([], ['C', 'a1', 'C', 'a2', 'x', 'y'].map(item));
+    assert.equal(keys(mergeLoaded(gapped, ['C', 'a1', 'x', 'y'].map(item))), 'C a1 x y');
   });
 
   it('keeps everything as not loaded when nothing is loaded', () => {

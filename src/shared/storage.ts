@@ -64,6 +64,7 @@ export const TITLE_MAX = 200;
 export const NOTE_MAX = 2000;
 const CONVERSATION_ID = /^[A-Za-z0-9_-]{6,80}$/;
 const DIGEST = /^[0-9a-f]{16}$/;
+const NEIGHBOUR = /^(human|assistant):[0-9a-f]{16}$/;
 
 export interface Bookmark {
   id: string;
@@ -95,6 +96,12 @@ function isIsoDate(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 40 && !Number.isNaN(Date.parse(value));
 }
 
+/** A stored neighbour id, null for "none known", or undefined when malformed. */
+function parseNeighbour(raw: unknown): string | null | undefined {
+  if (raw === null) return null;
+  return typeof raw === 'string' && NEIGHBOUR.test(raw) ? raw : undefined;
+}
+
 function parseAnchor(raw: unknown): MessageAnchor | null {
   if (!isRecord(raw)) return null;
   const role = raw.role as Role;
@@ -113,6 +120,12 @@ function parseAnchor(raw: unknown): MessageAnchor | null {
     ordinal: raw.ordinal as number,
     prefix: raw.prefix.slice(0, 200),
   };
+  // A malformed context is dropped, not trusted: without context an anchor never resolves as exact.
+  if (isRecord(raw.context)) {
+    const before = parseNeighbour(raw.context.before);
+    const after = parseNeighbour(raw.context.after);
+    if (before !== undefined && after !== undefined) anchor.context = { before, after };
+  }
   if (Number.isInteger(raw.headingIndex) && typeof raw.headingText === 'string') {
     anchor.headingIndex = raw.headingIndex as number;
     anchor.headingText = raw.headingText.slice(0, 300);
@@ -146,25 +159,31 @@ function parseBookmark(raw: unknown): Bookmark | null {
 
 export interface ParsedBookmarks {
   items: Bookmark[];
-  /** Records that failed validation and are ignored (not deleted). */
+  /** Records that failed validation. They are ignored, and kept in storage untouched until an erase. */
   invalid: number;
 }
 
-export function parseBookmarks(raw: unknown): ParsedBookmarks {
-  if (raw === undefined) return { items: [], invalid: 0 };
-  if (!isRecord(raw) || !Array.isArray(raw.items)) return { items: [], invalid: 1 };
-  const items: Bookmark[] = [];
-  let invalid = 0;
+/** One stored entry, in stored order: a valid bookmark, or a record kept exactly as found. */
+type Slot = { bookmark: Bookmark } | { raw: unknown };
+
+/** Stored entries in order, or null when the stored value itself is unreadable. */
+function slotsOf(raw: unknown): Slot[] | null {
+  if (raw === undefined) return [];
+  if (!isRecord(raw) || !Array.isArray(raw.items)) return null;
   const seen = new Set<string>();
-  for (const entry of raw.items) {
+  return raw.items.map((entry): Slot => {
     const bookmark = parseBookmark(entry);
-    if (!bookmark || seen.has(bookmark.id)) invalid += 1;
-    else {
-      seen.add(bookmark.id);
-      items.push(bookmark);
-    }
-  }
-  return { items, invalid };
+    if (!bookmark || seen.has(bookmark.id)) return { raw: entry };
+    seen.add(bookmark.id);
+    return { bookmark };
+  });
+}
+
+export function parseBookmarks(raw: unknown): ParsedBookmarks {
+  const slots = slotsOf(raw);
+  if (!slots) return { items: [], invalid: 1 };
+  const items = slots.flatMap((slot) => ('bookmark' in slot ? [slot.bookmark] : []));
+  return { items, invalid: slots.length - items.length };
 }
 
 export async function loadBookmarks(area: StorageAreaLike): Promise<ParsedBookmarks> {
@@ -172,9 +191,31 @@ export async function loadBookmarks(area: StorageAreaLike): Promise<ParsedBookma
   return parseBookmarks(data[BOOKMARKS_KEY]);
 }
 
-async function writeBookmarks(area: StorageAreaLike, items: Bookmark[]): Promise<void> {
-  const store: BookmarkStore = { version: 1, items };
+/**
+ * Reads the stored entries, lets `change` edit the valid ones, and writes them
+ * back. Records that failed validation keep their place and content, and other
+ * fields of the stored value are kept, so ordinary edits never delete data; only
+ * an erase does. An unreadable stored value is never overwritten.
+ */
+async function modifyBookmarks<R>(area: StorageAreaLike, change: (slots: Slot[]) => { slots: Slot[] | null; result: R }): Promise<R> {
+  const raw = (await area.get(BOOKMARKS_KEY))[BOOKMARKS_KEY];
+  const slots = slotsOf(raw);
+  if (!slots) {
+    throw new Error('The stored bookmarks are unreadable, so Folio will not change them. Download stored data in Settings to keep a copy, then use Erase bookmarks to start again.');
+  }
+  const { slots: next, result } = change(slots);
+  if (!next) return result;
+  const store: BookmarkStore & Record<string, unknown> = {
+    ...(isRecord(raw) ? raw : {}),
+    version: 1,
+    items: next.map((slot) => ('bookmark' in slot ? slot.bookmark : slot.raw)) as Bookmark[],
+  };
   await area.set({ [BOOKMARKS_KEY]: store });
+  return result;
+}
+
+function isBookmarkSlot(slot: Slot, id: string): slot is { bookmark: Bookmark } {
+  return 'bookmark' in slot && slot.bookmark.id === id;
 }
 
 export interface NewBookmark {
@@ -198,9 +239,7 @@ export async function addBookmark(area: StorageAreaLike, input: NewBookmark, now
     anchor: input.anchor,
   });
   if (!candidate) throw new Error('Bookmark rejected: invalid conversation or anchor.');
-  const { items } = await loadBookmarks(area);
-  await writeBookmarks(area, [...items, candidate]);
-  return candidate;
+  return modifyBookmarks(area, (slots) => ({ slots: [...slots, { bookmark: candidate }], result: candidate }));
 }
 
 export async function updateBookmark(
@@ -209,27 +248,25 @@ export async function updateBookmark(
   patch: { title?: string; note?: string },
   now: Date,
 ): Promise<Bookmark | null> {
-  const { items } = await loadBookmarks(area);
-  const index = items.findIndex((b) => b.id === id);
-  if (index < 0) return null;
-  const current = items[index]!;
-  const next: Bookmark = {
-    ...current,
-    title: patch.title !== undefined ? truncate(patch.title.trim() || current.title, TITLE_MAX) : current.title,
-    note: patch.note !== undefined ? patch.note.slice(0, NOTE_MAX) : current.note,
-    updatedAt: now.toISOString(),
-  };
-  items[index] = next;
-  await writeBookmarks(area, items);
-  return next;
+  return modifyBookmarks(area, (slots) => {
+    const index = slots.findIndex((slot) => isBookmarkSlot(slot, id));
+    if (index < 0) return { slots: null, result: null };
+    const current = (slots[index] as { bookmark: Bookmark }).bookmark;
+    const next: Bookmark = {
+      ...current,
+      title: patch.title !== undefined ? truncate(patch.title.trim() || current.title, TITLE_MAX) : current.title,
+      note: patch.note !== undefined ? patch.note.slice(0, NOTE_MAX) : current.note,
+      updatedAt: now.toISOString(),
+    };
+    return { slots: slots.map((slot, i) => (i === index ? { bookmark: next } : slot)), result: next };
+  });
 }
 
 export async function deleteBookmark(area: StorageAreaLike, id: string): Promise<boolean> {
-  const { items } = await loadBookmarks(area);
-  const remaining = items.filter((b) => b.id !== id);
-  if (remaining.length === items.length) return false;
-  await writeBookmarks(area, remaining);
-  return true;
+  return modifyBookmarks(area, (slots) => {
+    const remaining = slots.filter((slot) => !isBookmarkSlot(slot, id));
+    return remaining.length === slots.length ? { slots: null, result: false } : { slots: remaining, result: true };
+  });
 }
 
 /** Erases all bookmarks, including records that failed validation. */

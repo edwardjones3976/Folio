@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Folio P0 completion report: WO-20261030-002 correction attempt 1 (claude.ai)</title>
+<style>:root{color-scheme:light dark;font:16px/1.55 system-ui,Arial,sans-serif}body{max-width:1000px;margin:auto;padding:32px 18px}h1,h2{line-height:1.2}h2{margin-top:2em;border-top:1px solid #8885;padding-top:1em}table{width:100%;border-collapse:collapse}td,th{border:1px solid #8886;padding:.5em;text-align:left;vertical-align:top}code,pre{background:#8882;padding:.15em .3em}pre{white-space:pre-wrap;padding:1em}aside{padding:1em;border-left:4px solid #777;background:#8882}</style></head><body>
+<h1>Folio P0 completion report: WO-20261030-002, correction attempt 1 (claude.ai)</h1>
+<p>Spec section 10 report for the correction of review receipt <code>codex-20261030T053525Z-290325</code> (REJECT on <code>9e90406</code>). It keeps four things separate: code written, tests passing, live-browser confirmation, and public release.</p>
+
+<table>
+<tr><th>Item</th><th>State</th></tr>
+<tr><td>Base</td><td><code>main</code> at <code>9e90406d097281bf090aa9f583b8491045da5b68</code> (tree <code>652bf391a9a8e51fbe40370181549599090b90fe</code>), equal to <code>origin/main</code> when work started</td></tr>
+<tr><td>Commit / branch / PR</td><td>none. The work order says not to commit or push; all changes are uncommitted in the working tree.</td></tr>
+<tr><td>Supported provider</td><td>claude.ai only (<code>https://claude.ai/*</code>)</td></tr>
+<tr><td>Browser used for tests</td><td>Google Chrome 156.0.8078.74, headless, Windows 11</td></tr>
+<tr><td>Code written</td><td>yes (file list below)</td></tr>
+<tr><td>Tests passing</td><td>yes: 131 of 131, 0 failed, 0 skipped, 0 cancelled, 0 todo (consecutive full runs after the build)</td></tr>
+<tr><td>Live claude.ai confirmation</td><td><strong>UNKNOWN</strong>: not performed (no logged-in session). See <a href="#live">Live check</a>.</td></tr>
+<tr><td>Public release</td><td>none</td></tr>
+<tr><td>Timed comparison against native UI and competitors (step 6)</td><td><strong>UNKNOWN</strong>: not performed</td></tr>
+</table>
+
+<h2>Review findings and changes</h2>
+<table>
+<thead><tr><th>Finding</th><th>Change</th><th>Tests (each fails on <code>9e90406</code>)</th></tr></thead>
+<tbody>
+<tr><td>1 (P2) Missing duplicate targets resolved to another message as exact; occurrence numbering restarted on the loaded subset</td><td>Anchors now store <code>context</code>: the content digests (<code>role:digest</code>) of the previous and next known message, like the prefix and suffix of a W3C TextQuoteSelector. <code>src/shared/anchors.ts</code> resolves <em>exact</em> only when the text matches and a neighbour confirms it; a different previous message rules a candidate out; identical messages that context cannot separate return the new status <code>ambiguous</code>, never exact. Position (<code>closestByOrdinal</code>) is no longer used. Anchors without context (saved by 0.1.0) are never exact. The first known message's "before" is always unknown, so a page that starts mid-conversation needs the next message to confirm. <code>src/shared/merge.ts</code> places the loaded window by message identity (longest run of identical messages; ties keep only the loaded messages), and <code>src/content/indexer.ts</code> counts occurrences over all known messages, so keys no longer restart on the loaded subset. Jumps navigate only on <code>exact</code> or <code>changed</code>; <code>ambiguous</code> is labelled in the panel and in bookmarks.</td><td><code>tests/unit/anchors.test.ts</code> "resolveAnchor: duplicates on partially loaded pages" (includes the review probe); <code>tests/unit/merge.test.ts</code> two duplicate-window cases; <code>tests/browser/adapter.test.ts</code> "duplicate messages on partially loaded pages" (on base: known list collapsed from 6 to 4 messages; the saved second "Continue" resolved <code>exact</code> to the first copy).</td></tr>
+<tr><td>2 (P2) Short prefixes matched unrelated messages</td><td>"Changed" now needs at least <code>MIN_PREFIX_MATCH</code> = 24 identical opening characters in absolute terms; a saved prefix shorter than 24 never matches as changed. Short messages need an exact match plus a confirming neighbour, else <code>ambiguous</code> or <code>unresolved</code>.</td><td><code>tests/unit/anchors.test.ts</code> "resolveAnchor: short messages" (the "No" versus "Nothing else is required" probe returned <code>changed</code> on base).</td></tr>
+<tr><td>3 (P2) Erase all left the conversation index intact</td><td>After clearing storage, Erase all sends an explicit <code>folio:erase-index</code> message to every open tab (<code>eraseIndexesInAllTabs</code> in <code>src/sidepanel/connection.ts</code>). The content script empties its index, including messages virtualization removed, and keeps it empty (new page state <code>erased</code>) until the user chooses <strong>Re-index this page</strong> or the page path changes; DOM changes do not rebuild it. The panel clears its search results, bookmark checks, pending open and editor state, shows the erased status with the Re-index button, and announces how many tabs were cleared.</td><td><code>tests/browser/extension.test.ts</code> "erase all forgets the live index": searches the content script directly over a port. On base, after Erase all, <code>"Step 6:"</code> (a virtualized-away prompt) was still found: 1 hit over 300 loaded and 200 seen-earlier messages.</td></tr>
+<tr><td>4 (P2) Live updates discarded unsaved bookmark edits</td><td><code>renderBookmarks</code> keeps an open editor's list item in place (never detached) and only refreshes the saved details around it, so the draft, focus and caret survive snapshots and bookmark checks.</td><td><code>tests/browser/extension.test.ts</code> "a snapshot arriving during an edit keeps the draft and focus" (on base: draft replaced by saved values, focus and caret lost).</td></tr>
+<tr><td>5 (P2) Ordinary bookmark writes deleted records that failed validation</td><td>Writes in <code>src/shared/storage.ts</code> go through <code>modifyBookmarks</code>: records that fail validation (including duplicate ids) keep their place and content, other fields of the stored value are kept, and an unreadable stored value is never overwritten (the write is refused with an explanation). Only Erase bookmarks or Erase all removes them.</td><td><code>tests/unit/storage.test.ts</code> "records that failed validation are never dropped by ordinary writes": add, update, delete and an unreadable store.</td></tr>
+<tr><td>6 (P3) Report and guide were Markdown</td><td>This report and <a href="#live">the manual live check</a> are now self-contained HTML (<code>docs/P0-COMPLETION-REPORT.html</code>, <code>docs/MANUAL-LIVE-CHECK.html</code>); the Markdown copies are deleted and README links updated.</td><td><code>tests/unit/audit.test.ts</code> "human-facing docs are self-contained HTML, one copy each".</td></tr>
+</tbody>
+</table>
+<p>How "fails on 9e90406" was checked: the base sources were written from <code>git show 9e90406:&lt;path&gt;</code> into a scratch folder under the ignored <code>dist/</code> (removed by the next build), the new test files were copied in, and the tests were run there. Results are under <a href="#tests">Test commands and results</a>. The worktree and <code>.git</code> were not changed for this.</p>
+
+<h2>Files changed</h2>
+<ul>
+<li>Source: <code>src/shared/anchors.ts</code>, <code>src/shared/merge.ts</code>, <code>src/shared/types.ts</code>, <code>src/shared/storage.ts</code>, <code>src/shared/protocol.ts</code>, <code>src/shared/features.ts</code>, <code>src/content/indexer.ts</code>, <code>src/content/main.ts</code>, <code>src/sidepanel/main.ts</code>, <code>src/sidepanel/bookmarks-view.ts</code>, <code>src/sidepanel/settings-view.ts</code>, <code>src/sidepanel/connection.ts</code>, <code>src/sidepanel/sidepanel.html</code></li>
+<li>Tests: <code>tests/unit/anchors.test.ts</code>, <code>tests/unit/merge.test.ts</code>, <code>tests/unit/storage.test.ts</code>, <code>tests/unit/audit.test.ts</code>, <code>tests/browser/adapter.test.ts</code>, <code>tests/browser/extension.test.ts</code></li>
+<li>Docs: <code>README.md</code>; added <code>docs/P0-COMPLETION-REPORT.html</code> and <code>docs/MANUAL-LIVE-CHECK.html</code>; deleted <code>docs/P0-COMPLETION-REPORT.md</code> and <code>docs/MANUAL-LIVE-CHECK.md</code></li>
+<li>Not changed: <code>docs/PRODUCT-SPEC.html</code>, <code>LICENSE</code>, <code>manifest.json</code>, <code>.gitignore</code></li>
+</ul>
+
+<h2>Permissions (unchanged)</h2>
+<table>
+<tr><th>Permission</th><th>Why</th></tr>
+<tr><td><code>storage</code></td><td>settings and bookmarks in <code>chrome.storage.local</code></td></tr>
+<tr><td><code>sidePanel</code></td><td>the side panel UI, opened from the toolbar button</td></tr>
+<tr><td>content script <code>https://claude.ai/*</code> (top frame, isolated world)</td><td>read the loaded messages; scroll and highlight them</td></tr>
+</table>
+<p>No <code>host_permissions</code>, <code>tabs</code>, <code>activeTab</code>, <code>scripting</code>, <code>cookies</code>, network or other-site access. The erase message uses <code>chrome.tabs.query</code> (tab ids only) and <code>chrome.tabs.sendMessage</code>, neither of which needs a permission. Extension-page CSP: <code>default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'</code>.</p>
+
+<h2>What is stored (changed)</h2>
+<p>Each bookmark anchor now also stores <code>context.before</code> and <code>context.after</code>: the role and 16-hex content digest of the neighbouring messages, not their text. A malformed context read back from storage is dropped, which makes that anchor resolve as ambiguous rather than exact.</p>
+
+<h2 id="tests">Test commands and results</h2>
+<pre>npm test   ==  node src/tools/build.mjs &amp;&amp; node --test --test-concurrency=1 "tests/**/*.test.ts"</pre>
+<p><code>npm</code> commands are not available in this writer session, so the two underlying commands were run directly, in the foreground:</p>
+<pre>node src/tools/build.mjs
+  -&gt; Folio 0.1.0 built into ...\dist
+node --test --test-concurrency=1 "tests/**/*.test.ts"
+  -&gt; tests 131, suites 38, pass 131, fail 0, cancelled 0, skipped 0, todo 0</pre>
+<table>
+<tr><th>File group</th><th>Tests</th><th>Change from <code>9e90406</code></th></tr>
+<tr><td><code>tests/unit/*.test.ts</code> (Node, no browser)</td><td>87</td><td>+16</td></tr>
+<tr><td><code>tests/browser/adapter.test.ts</code> (Chrome, adapter and index on fixtures)</td><td>21</td><td>+2</td></tr>
+<tr><td><code>tests/browser/extension.test.ts</code> (Chrome, built extension and panel)</td><td>23</td><td>+2</td></tr>
+</table>
+<p>The new tests run against the <code>9e90406</code> sources (scratch copy, see above): unit, 19 of the 42 tests in the three changed unit files failed, including every finding 1, 2 and 5 test except one positive case ("confirms the head of a mid-conversation page by the next message", which base also passes); browser, all four new tests failed (two further base failures in that run were a cascade: the failed editor test left the editor open). The finding 6 audit test was not run against base; by inspection it fails there, because <code>docs/*.md</code> exist and README links them. Two of the merge cases fail on base only because the merge input field was renamed from <code>key</code> to <code>id</code>; the browser test is the meaningful base failure for the merge.</p>
+<p>Measurements printed by the tests, on synthetic data (automated timings, not user benchmarks): full index of 500 messages 10.8 ms; automated search-and-jump to exchange 137 of 250: 154 ms.</p>
+
+<h2>Known gaps</h2>
+<ul>
+<li>Live claude.ai behaviour is UNKNOWN.</li>
+<li>A message at the top of what is loaded is confirmed only by the next message; if that is missing or regenerated, the target is ambiguous until more of the chat loads.</li>
+<li>Bookmarks saved by Folio 0.1.0 have no context and report ambiguous; they must be bookmarked again.</li>
+<li>No conversation-global ordinal is stored: Folio cannot prove that the first loaded message is the conversation start, so it does not claim one.</li>
+<li>When the loaded window could sit in two equally good places among known messages, Folio keeps only the loaded messages; messages seen earlier are then no longer listed or searchable.</li>
+<li>Deleting a bookmark whose id also appears in a record that failed validation (a duplicate) leaves that record; on the next read it may become the valid bookmark with that id.</li>
+<li>Erase all reaches tabs where Folio's content script runs; tabs opened before installation have nothing to erase.</li>
+<li>Only loaded messages are indexed; other branch versions, images, files and artifacts are not. Chapters are partial. No archive or export of conversations (P1).</li>
+<li>The real side-panel container, toolbar click, screen readers, theme visuals and JSON download to disk are not covered by automation.</li>
+<li>No TypeScript type-check was run (no compiler available).</li>
+</ul>
+
+<h2 id="live">Live check</h2>
+<p>The manual live check is in <code>docs/MANUAL-LIVE-CHECK.html</code> (README links it). It now includes identical prompts on partially loaded pages, editing a bookmark while a reply streams, and Erase all with a seen-earlier message.</p>
+
+<h2>Install and rollback</h2>
+<ul>
+<li><strong>Install:</strong> <code>npm run build</code>, then Load unpacked <code>dist/</code> in <code>chrome://extensions</code>.</li>
+<li><strong>Rollback:</strong> check out the previous commit, rebuild, and reload the extension.</li>
+<li><strong>Uninstall:</strong> remove the extension; this deletes its storage.</li>
+</ul>
+
+<h2>Session notes for the Foreman</h2>
+<ul>
+<li>Writer: Claude Opus 5.5 (model id <code>claude-opus-5-5</code>, as stated by this session's system information). The reasoning-effort setting and the authentication method are not exposed to the model inside the session, so xhigh and first-party Max authentication cannot be confirmed from here. No API key was used by the writer.</li>
+<li>Blocked in this session (no approval surface): <code>git archive</code>, <code>git ls-files</code>/<code>ls-tree</code>, <code>cp -r</code>, and <code>git -C</code>. The base comparison used <code>git show</code> with output redirection instead.</li>
+<li>The untracked <code>%SystemDrive%/</code> folder reported earlier is still in the repository root and is ignored by <code>.gitignore</code>; it was not touched.</li>
+</ul>
+</body></html>

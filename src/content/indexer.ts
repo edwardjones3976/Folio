@@ -1,7 +1,8 @@
 // Live, in-memory index of the open conversation. Nothing here is persisted:
 // message text stays in the content script's memory for the life of the page.
 import type { DiscoveredMessage, SiteAdapter } from '../adapters/types.ts';
-import { resolveAnchor } from '../shared/anchors.ts';
+import { messageId, resolveAnchor } from '../shared/anchors.ts';
+import type { AnchorCandidate } from '../shared/anchors.ts';
 import { computeCoverage } from '../shared/coverage.ts';
 import { mergeLoaded } from '../shared/merge.ts';
 import { buildExchanges, exchangeNumbers } from '../shared/outline.ts';
@@ -20,6 +21,8 @@ import type {
 } from '../shared/types.ts';
 
 interface IndexedMessage extends MessageSummary {
+  /** Content identity, `role:digest`; identical messages share it. */
+  id: string;
   text: string;
 }
 
@@ -68,16 +71,14 @@ export class LiveIndex {
         this.known = [];
         this.signature = signature;
       }
-      const seen = new Map<string, number>();
       const current: IndexedMessage[] = discovery.messages.map((m, ordinal) => {
         const d = digest(m.text);
-        const occurrence = seen.get(`${m.role}:${d}`) ?? 0;
-        seen.set(`${m.role}:${d}`, occurrence + 1);
         return {
-          key: `${m.role}:${d}:${occurrence}`,
+          id: messageId(m.role, d),
+          key: '',
           role: m.role,
           digest: d,
-          occurrence,
+          occurrence: 0,
           seq: 0,
           ordinal,
           excerpt: excerpt(m.text),
@@ -89,8 +90,16 @@ export class LiveIndex {
           text: m.text,
         };
       });
-      this.known = mergeLoaded(this.known, current).map((m, seq) => ({ ...m, seq, ordinal: m.rendered ? m.ordinal : -1 }));
-      this.elements = new Map(current.map((m, i) => [m.key, discovery.messages[i]!]));
+      // Occurrences are counted over everything known (including messages that
+      // virtualization removed), not over the loaded subset, so a duplicate keeps
+      // its number when the window slides.
+      const seen = new Map<string, number>();
+      this.known = mergeLoaded(this.known, current).map((m, seq) => {
+        const occurrence = seen.get(m.id) ?? 0;
+        seen.set(m.id, occurrence + 1);
+        return { ...m, key: `${m.id}:${occurrence}`, occurrence, seq, ordinal: m.rendered ? m.ordinal : -1 };
+      });
+      this.elements = new Map(this.known.filter((m) => m.rendered).map((m) => [m.key, discovery.messages[m.ordinal]!]));
       this.strategy = discovery.strategy;
       this.signals = discovery.signals;
       this.state = current.length > 0 || this.known.length > 0 ? 'ready' : 'no-messages';
@@ -133,7 +142,7 @@ export class LiveIndex {
       provider: 'claude.ai',
       state: this.state,
       conversation: this.conversation,
-      messages: this.known.map(({ text: _text, ...summary }) => summary),
+      messages: this.known.map(({ text: _text, id: _id, ...summary }) => summary),
       coverage: this.coverage,
       strategy: this.strategy,
       revision: this.revision,
@@ -156,8 +165,14 @@ export class LiveIndex {
     }));
   }
 
+  /** `role:digest` of the known message at `index`, or null outside the known list. */
+  private neighbour(index: number): string | null {
+    return this.known[index]?.id ?? null;
+  }
+
   anchorFor(key: string, headingIndex?: number): MessageAnchor | null {
-    const message = this.known.find((m) => m.key === key);
+    const position = this.known.findIndex((m) => m.key === key);
+    const message = this.known[position];
     if (!message || !this.conversation) return null;
     const anchor: MessageAnchor = {
       provider: 'claude.ai',
@@ -167,6 +182,7 @@ export class LiveIndex {
       occurrence: message.occurrence,
       ordinal: message.ordinal,
       prefix: anchorPrefix(message.text),
+      context: { before: this.neighbour(position - 1), after: this.neighbour(position + 1) },
     };
     const heading = headingIndex === undefined ? undefined : message.headings[headingIndex];
     if (heading) {
@@ -177,8 +193,16 @@ export class LiveIndex {
   }
 
   locate(anchor: MessageAnchor): Located {
-    const resolution = resolveAnchor(anchor, this.conversation?.id ?? null, this.known);
-    if (resolution.status === 'unresolved') return { resolution, message: null };
+    const candidates: AnchorCandidate[] = this.known.map((m, i) => ({
+      role: m.role,
+      digest: m.digest,
+      text: m.text,
+      rendered: m.rendered,
+      before: this.neighbour(i - 1),
+      after: this.neighbour(i + 1),
+    }));
+    const resolution = resolveAnchor(anchor, this.conversation?.id ?? null, candidates);
+    if (resolution.status === 'unresolved' || resolution.status === 'ambiguous') return { resolution, message: null };
     const target = this.known[resolution.index]!;
     const message = this.elements.get(target.key) ?? null;
     if (!message || !message.element.isConnected) {

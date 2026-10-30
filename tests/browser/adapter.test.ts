@@ -251,6 +251,51 @@ describe('edge cases (synthetic)', () => {
   });
 });
 
+describe('duplicate messages on partially loaded pages (synthetic, review finding 1)', () => {
+  const removeTurns = (from: number, to: number) =>
+    page.evaluate(
+      (a: number, b: number) => {
+        for (const turn of Array.from(document.querySelectorAll('[data-test-render-count]')).slice(a, b)) turn.remove();
+      },
+      from,
+      to,
+    );
+  const highlightedPrompts = () =>
+    page.evaluate<number[]>(() =>
+      Array.from(document.querySelectorAll('[data-testid="user-message"]')).flatMap((el, i) => (el.hasAttribute('data-folio-highlight') ? [i] : [])),
+    );
+
+  it('keeps both copies of a duplicate prompt, with stable keys, when virtualization removes the first', async () => {
+    await open('edge');
+    const before = await call<Snapshot>('snapshot');
+    const secondKey = before.messages[2]!.key;
+    const anchor = await call<MessageAnchor>('anchorFor', secondKey);
+    await removeTurns(0, 2);
+    const after = await call<Snapshot>('snapshot');
+    assert.equal(after.coverage.knownCount, 6);
+    assert.equal(after.coverage.notRenderedCount, 2);
+    assert.deepEqual(after.messages.map((m) => m.rendered), [false, false, true, true, true, true]);
+    assert.equal(after.messages[2]!.key, secondKey, 'occurrence numbering must not restart on the loaded subset');
+    const hit = (await call<SearchResult>('search', 'onerror')).hits[0];
+    assert.equal(hit?.rendered, false, 'the virtualized reply stays searchable');
+    assert.equal((await call<{ resolution: Resolution }>('locate', anchor)).resolution.status, 'exact');
+    await call('jump', anchor, {});
+    assert.deepEqual(await highlightedPrompts(), [0], 'the remaining (second) copy is highlighted');
+  });
+
+  it('never resolves a saved duplicate to the other copy when the saved one is not loaded', async () => {
+    await open('edge');
+    const snapshot = await call<Snapshot>('snapshot');
+    const anchor = await call<MessageAnchor>('anchorFor', snapshot.messages[2]!.key);
+    await removeTurns(2, 6);
+    const located = await call<{ resolution: Resolution; text: string | null }>('locate', anchor);
+    assert.notEqual(located.resolution.status, 'exact');
+    assert.equal(located.text, null);
+    assert.equal(await call('jump', anchor, {}), null);
+    assert.deepEqual(await highlightedPrompts(), [], 'nothing is highlighted');
+  });
+});
+
 describe('layout drift and unsupported pages (synthetic)', () => {
   it('falls back to CSS class names and reports that as partial', async () => {
     await open('drifted');
