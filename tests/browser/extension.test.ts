@@ -496,6 +496,22 @@ describe('outline clicks follow live identity (synthetic, review finding 3)', ()
     assert.equal(await page.evaluate(() => document.querySelectorAll('[data-folio-highlight]').length), 0);
     await selectTab('outline');
   });
+
+  it('a click on the later of two identical exchanges, after the window slid back onto an older identical pair, does not jump (review receipt codex-20261030T071243Z-520675)', async () => {
+    await showFixture('repeated');
+    await outlineSummary('2 exchanges, 4 messages, 0 reply headings.');
+    const { snapshot } = await askContent(null);
+    await page.evaluate(() => {
+      // An older identical pair loads, the earlier pair keeps its elements, the later pair is detached.
+      const turns = Array.from(document.querySelectorAll('[data-test-render-count]'));
+      for (const turn of turns.slice(2)) turn.remove();
+      document.getElementById('conversation')!.prepend(...turns.slice(0, 2).map((turn) => turn.cloneNode(true)));
+    });
+    const went = await askContent<{ result: JumpResult }>({ type: 'go', key: snapshot.messages[2]!.key, revision: snapshot.revision });
+    assert.equal(went.reply?.result.status, 'ambiguous', 'a12b193: jumped to the earlier pair');
+    assert.match(went.reply!.result.note, /^The page changed after this list was shown\. 2 messages have identical text/);
+    assert.deepEqual(await highlightedPrompts(), []);
+  });
 });
 
 describe('settings', () => {

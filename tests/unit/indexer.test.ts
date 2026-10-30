@@ -1,6 +1,6 @@
 // The live index driven by an in-memory adapter (synthetic messages, no DOM):
-// the review probes for receipt codex-20261030T064426Z-740188, rebuilt as the
-// reviewer described them.
+// the review probes for receipts codex-20261030T064426Z-740188 and
+// codex-20261030T071243Z-520675, rebuilt as the reviewer described them.
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { DiscoveredMessage, SiteAdapter } from '../../src/adapters/types.ts';
@@ -13,6 +13,7 @@ const CONV = 'abcdef12-3456';
 
 /** A stand-in for a message element: only its identity and `isConnected` are used. */
 const element = () => ({ isConnected: true }) as unknown as Element;
+const detach = (el: Element) => Object.assign(el, { isConnected: false });
 
 function msg(role: Role, text: string, el: Element = element(), streaming = false): DiscoveredMessage {
   return { element: el, role, text, headings: [], branch: null, streaming };
@@ -38,7 +39,7 @@ function go(index: LiveIndex, key: string, revision: number): Targeted | null {
   let target = index.target(key, revision);
   if (!target?.message) {
     index.refresh();
-    target = index.target(key, revision);
+    target = index.target(key, revision, target?.differs === true);
   }
   return target;
 }
@@ -186,5 +187,92 @@ describe('LiveIndex: an earlier generation is found again only by its anchor (re
     const now = p.index.snapshot();
     const fresh = go(p.index, now.messages[2]!.key, now.revision)!;
     assert.deepEqual([fresh.stale, fresh.message?.element === els[2]], [false, true], 'the updated list reaches it by live identity');
+  });
+});
+
+describe('LiveIndex: a changed element mapping invalidates the click (review receipt codex-20261030T071243Z-520675)', () => {
+  const exchanges = (els: Element[]) => [msg('human', 'Continue', els[0]), msg('assistant', 'Done.', els[1]), msg('human', 'Continue', els[2]), msg('assistant', 'Done.', els[3])];
+  /** The loaded window slides back: an older identical pair loads, the earlier pair keeps its elements, the later pair is detached. */
+  const slideBack = (els: Element[]) => {
+    detach(els[2]!);
+    detach(els[3]!);
+    return [msg('human', 'Continue'), msg('assistant', 'Done.'), msg('human', 'Continue', els[0]), msg('assistant', 'Done.', els[1])];
+  };
+  const shape = (t: Targeted) => JSON.stringify({ stale: t.stale, status: t.resolution.status, hasMessage: t.message !== null });
+
+  it('the review probe: the later "Continue", clicked after the window slid back, is not exact to the earlier one', () => {
+    const els = Array.from({ length: 4 }, element);
+    const p = page(exchanges(els));
+    const { revision, messages } = p.index.snapshot();
+    const key = messages[2]!.key;
+    const saved = p.index.anchorFor(key, undefined, revision)!;
+    p.state.messages = slideBack(els);
+
+    const before = p.index.target(key, revision)!;
+    assert.deepEqual([before.stale, before.resolution.status, before.message], [false, 'unresolved', null], 'the page check refuses');
+
+    const after = go(p.index, key, revision)!;
+    assert.ok(!navigates(after.resolution), `a12b193: ${shape(after)} at index 2, the earlier pair's prompt`);
+    assert.equal(after.message, null);
+    assert.equal(after.stale, true);
+    assert.equal(after.resolution.status, 'ambiguous');
+    assert.deepEqual(after.resolution, p.index.locate(saved).resolution, 'the same answer as the saved anchor');
+    assert.equal(before.differs, true, 'the refusal is reported, so the retry is resolved by anchor');
+  });
+
+  it('the review probe with the refresh before the click: the refresh starts a new generation and the click is found again only by its anchor', () => {
+    const els = Array.from({ length: 4 }, element);
+    const p = page(exchanges(els));
+    const { revision, messages } = p.index.snapshot();
+    const saved = p.index.anchorFor(messages[2]!.key, undefined, revision)!;
+    p.state.messages = slideBack(els);
+    assert.equal(p.index.refresh(), true, 'a12b193: false, the element change was discarded');
+    assert.equal(p.index.snapshot().revision, revision + 1);
+
+    for (const shown of messages) {
+      const went = go(p.index, shown.key, revision)!;
+      assert.equal(went.stale, true);
+      assert.ok(!navigates(went.resolution), `${shown.key}: ${shape(went)}`);
+      assert.equal(went.message, null);
+    }
+    assert.deepEqual(go(p.index, messages[2]!.key, revision)!.resolution, p.index.locate(saved).resolution);
+
+    // The updated list names what the page shows now: its third entry is the page's third message.
+    const now = p.index.snapshot();
+    const fresh = go(p.index, now.messages[2]!.key, now.revision)!;
+    assert.deepEqual([fresh.stale, fresh.message?.element === els[0]], [false, true]);
+  });
+
+  it('a refresh that finds the same messages in other elements starts a new generation', () => {
+    const p = page([
+      msg('human', 'How do I migrate the users table?'),
+      msg('assistant', 'Use the expand and contract pattern: add new columns, dual-write, backfill, then switch reads.'),
+      msg('human', 'How large should the batches be?'),
+      msg('assistant', 'Start with 10 000 rows and measure lock time.'),
+    ]);
+    const { revision, messages } = p.index.snapshot();
+    assert.equal(p.index.refresh(), false, 'an unchanged page keeps its generation');
+    p.state.messages = p.state.messages.map((m) => ({ ...m, element: element() }));
+    assert.equal(p.index.refresh(), true);
+    const now = p.index.snapshot();
+    assert.deepEqual([now.revision, now.messages.map((m) => m.key)], [revision + 1, messages.map((m) => m.key)]);
+
+    const old = go(p.index, messages[1]!.key, revision)!;
+    assert.deepEqual([old.stale, old.resolution.status, old.message?.element === p.state.messages[1]!.element], [true, 'exact', true], 'both neighbours confirm it');
+    const fresh = go(p.index, now.messages[0]!.key, now.revision)!;
+    assert.deepEqual([fresh.stale, fresh.message?.element === p.state.messages[0]!.element], [false, true]);
+  });
+
+  it('a retry after a detected mismatch is resolved by its anchor even when the generation is unchanged', () => {
+    const els = Array.from({ length: 4 }, element);
+    const p = page(exchanges(els));
+    const { revision, messages } = p.index.snapshot();
+    const retried = p.index.target(messages[2]!.key, revision, true)!;
+    assert.deepEqual([retried.stale, retried.resolution.status, retried.message], [true, 'ambiguous', null], 'a12b193: exact index 2');
+
+    const unique = page([msg('human', 'Plan the migration.'), msg('assistant', 'Expand, then contract.'), msg('human', 'And the batches?')]);
+    const list = unique.index.snapshot();
+    const confirmed = unique.index.target(list.messages[1]!.key, list.revision, true)!;
+    assert.deepEqual([confirmed.stale, confirmed.resolution.status, confirmed.message?.element === unique.state.messages[1]!.element], [true, 'exact', true]);
   });
 });

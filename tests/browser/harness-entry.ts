@@ -45,7 +45,7 @@ const index = new LiveIndex(claudeAdapter, document, location);
     let target = index.target(key, revision);
     if (!target?.message) {
       index.refresh();
-      target = index.target(key, revision);
+      target = index.target(key, revision, target?.differs === true);
     }
     if (!target) return null;
     if (target.message) jumpTo(document, target.message, options);

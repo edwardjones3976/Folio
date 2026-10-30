@@ -434,6 +434,23 @@ describe('outline and search clicks follow live identity, not anchors (synthetic
     assert.deepEqual(await highlighted(PROMPTS), []);
   });
 
+  it('does not follow the later of two identical exchanges after the window slid back onto an older identical pair (review receipt codex-20261030T071243Z-520675)', async () => {
+    for (const refreshFirst of [false, true]) {
+      await open('repeated');
+      const shown = await call<Snapshot>('snapshot');
+      await page.evaluate(() => {
+        // An older identical pair loads, the earlier pair keeps its elements, the later pair is detached.
+        const turns = Array.from(document.querySelectorAll('[data-test-render-count]'));
+        for (const turn of turns.slice(2)) turn.remove();
+        document.getElementById('conversation')!.prepend(...turns.slice(0, 2).map((turn) => turn.cloneNode(true)));
+      });
+      if (refreshFirst) assert.equal(await call('refresh'), true, 'a12b193: false, the element change was discarded');
+      const went = await call<Went>('go', shown.messages[2]!.key, shown.revision, {});
+      assert.deepEqual([went.stale, went.jumped, went.resolution.status], [true, false, 'ambiguous'], `refresh first: ${refreshFirst}; a12b193: not stale, exact, jumped`);
+      assert.deepEqual(await highlighted(PROMPTS), []);
+    }
+  });
+
   it('keeps no earlier generations once the index is cleared', async () => {
     await open('repeated');
     const snapshot = await call<Snapshot>('snapshot');

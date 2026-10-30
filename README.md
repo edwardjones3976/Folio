@@ -154,11 +154,15 @@ interface (`src/adapters/types.ts`):
   written may grow, unless it is the one clicked). If anything differs, for
   example the element now holds other text or the page reused or moved it,
   Folio rebuilds its index from the page and treats the click as coming from
-  an older list.
-- A click on an older list (the page changed after the list was drawn, and
-  earlier messages loading can renumber entries) is never followed by its
-  element. Folio resolves the entry's anchor, saved as of that list, as
-  strictly as a bookmark's, and the status line says that the page changed.
+  an older list: it then finds the entry only by its anchor, even if the
+  rebuilt index lists the same messages.
+- A click on an older list is never followed by its element. A list is older
+  when the page changed after it was drawn. Earlier messages loading can
+  renumber entries, and the page can show the same text in other elements (a
+  re-render, or a loaded window that slid onto an identical run of messages),
+  so the index starts a new version whenever a loaded message is shown by a
+  different element. Folio resolves the entry's anchor, saved as of that list,
+  as strictly as a bookmark's, and the status line says that the page changed.
 - Each message gets a content digest. A bookmark's anchor is the digest plus
   the digests of the messages just before and after it, in the manner of a W3C
   Web Annotation text quote selector (exact text plus prefix and suffix). A
@@ -199,8 +203,9 @@ npm run test:browser   # real Chrome
   resolution (identical messages, partial pages, conflicting neighbours, the
   strict two-sided rule for first and latest messages, short messages, anchors
   without context), the live index driven by an in-memory page (outline clicks
-  on elements whose text changed or that the page reused, and clicks on older
-  lists), storage validation (including corrupted
+  on elements whose text changed or that the page reused, clicks on older
+  lists, and identical exchanges whose elements changed, before and after a
+  refresh), storage validation (including corrupted
   records kept through add and edit, duplicates removed with the bookmark they
   copy, and write failures), feature statuses, the bundler, and a static
   privacy and permission audit of the manifest, sources, bundles, README, docs
@@ -210,12 +215,14 @@ npm run test:browser   # real Chrome
   (including identical prompts with part of the page removed), fully identical
   exchanges reached by live identity, clicks after the page changed (a reply
   whose text changed, an element reused for an identical earlier reply, keys
-  renumbered by earlier messages loading), layout drift, unrecognized, no
+  renumbered by earlier messages loading, a window that slid back onto an
+  identical older exchange), layout drift, unrecognized, no
   conversation, and a 500-message conversation with virtualization.
 - `tests/browser/extension.test.ts`: loads the built `dist/` extension into Chrome
   and drives the real side panel (opened as a tab pinned with `?tabId=`) through
   the P0 stories: open, jump (including identical exchanges, a single message,
-  and a list drawn before the page changed), keyboard use, find, bookmark
+  a list drawn before the page changed, and a window that slid onto identical
+  exchanges), keyboard use, find, bookmark
   (including a live update during an edit, and a bookmark that cannot be
   confirmed), settings, erase (including a direct check that the content
   script's index is empty afterwards), unusable pages and network silence.
@@ -263,7 +270,13 @@ executable.
   entry's anchor, as of that list, is exact or changed. The first or latest
   entry of that list, and entries among identical exchanges, are then refused
   with "The page changed after this list was shown"; choose them again from
-  the updated list.
+  the updated list. This also applies when the page only re-rendered message
+  elements without changing their text.
+- When the loaded window slides onto a run of messages identical to the ones
+  it replaced, Folio places the window by text, not by element. The updated
+  list then matches what the page shows, but the copies that slid away may not
+  be listed as "not loaded". Clicks on lists drawn before the slide are
+  resolved by their anchors, as above.
 - While a reply is being written, a click on that reply (or a heading in it)
   can be refused: its text changed after the list was drawn, and as the latest
   message its anchor cannot be confirmed. Clicks on other messages are not

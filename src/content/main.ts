@@ -170,7 +170,8 @@ function navigate(located: Located, options: JumpOptions): JumpResult {
  * by live identity while the list's version of the index is current, otherwise by
  * its anchor, as strictly as a bookmark. Only a page that still shows what the
  * index holds is followed; when the entry cannot be followed as it is, the index
- * is rebuilt from the page and the entry is asked for again.
+ * is rebuilt from the page and the entry is asked for again. When the page was
+ * found to differ from the index, it is asked for again only by its anchor.
  */
 function go(request: Extract<PanelRequest, { type: 'go' }>): JumpResult {
   const { key, revision, headingIndex, highlightTerm } = request;
@@ -178,7 +179,7 @@ function go(request: Extract<PanelRequest, { type: 'go' }>): JumpResult {
   let target = index.target(key, revision);
   if (!target?.message) {
     if (refreshIndex()) broadcast();
-    target = index.target(key, revision);
+    target = index.target(key, revision, target?.differs === true);
   }
   if (!target) return { status: 'unresolved', note: LIST_EXPIRED };
   const heading = headingIndex === undefined ? undefined : target.shown.headings[headingIndex];

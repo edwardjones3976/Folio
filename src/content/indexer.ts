@@ -36,6 +36,8 @@ export interface Targeted extends Located {
   shown: MessageSummary;
   /** True when the page changed after the panel showed the entry, so it had to be found again. */
   stale: boolean;
+  /** True when the page no longer showed what the index held, so the entry was not followed; a retry finds it only by its anchor. */
+  differs: boolean;
 }
 
 /**
@@ -103,6 +105,9 @@ export class LiveIndex {
   private state: PageState = 'no-conversation';
   private fingerprint = '';
   private revision = 0;
+  /** A number per message element, so the fingerprint changes when a message is shown by another element. */
+  private elementIds = new WeakMap<Element, number>();
+  private elementCount = 0;
   private readonly adapter: SiteAdapter;
   private readonly doc: Document;
   private readonly location: { href: string; pathname: string };
@@ -165,27 +170,44 @@ export class LiveIndex {
     }
     this.coverage = computeCoverage(this.known, this.signals);
 
+    // Includes the element that shows each loaded message: when the page shows a
+    // message in another element (re-rendered, or a window that slid onto identical
+    // messages), the keys can stay the same while naming other messages, so that
+    // starts a new generation and a list drawn before is followed only by its anchors.
     const fingerprint = JSON.stringify([
       this.state,
       this.conversation,
       this.strategy.id,
       this.coverage.statement,
       this.coverage.signals.map((s) => `${s.code}:${s.count ?? ''}`),
-      this.known.map((m) => `${m.key}|${m.rendered ? 1 : 0}|${m.streaming ? 1 : 0}|${m.headings.length}|${m.branch?.current ?? ''}`),
+      this.known.map(
+        (m) => `${m.key}|${m.rendered ? this.elementId(this.elements.get(m.key)?.element) : '-'}|${m.streaming ? 1 : 0}|${m.headings.length}|${m.branch?.current ?? ''}`,
+      ),
     ]);
     const changed = fingerprint !== this.fingerprint;
     if (changed) {
       this.fingerprint = fingerprint;
       this.revision += 1;
     }
-    // Same keys when unchanged; the elements may still have been re-rendered.
+    // When unchanged: the same keys, shown by the same elements.
     keep(this.generations, this.revision, this.known, RECENT_GENERATIONS);
     return changed;
+  }
+
+  private elementId(element: Element | undefined): string {
+    if (!element) return '-';
+    let id = this.elementIds.get(element);
+    if (id === undefined) {
+      id = ++this.elementCount;
+      this.elementIds.set(element, id);
+    }
+    return String(id);
   }
 
   reset(): void {
     this.known = [];
     this.elements = new Map();
+    this.elementIds = new WeakMap();
     this.generations = new Map();
     this.searched = new Map();
     this.signature = '';
@@ -285,22 +307,24 @@ export class LiveIndex {
    * generation (the page changed after the list was drawn) the entry's anchor in
    * that generation is resolved against the current one, exactly as a bookmark's
    * is. Either way the message is followed only while the page still shows what
-   * the current generation indexed (`live`); otherwise `message` is null and the
-   * caller refreshes the index and asks again. Null when that generation is no
+   * the current generation indexed (`live`); otherwise `message` is null,
+   * `differs` is true, and the caller refreshes the index and asks again with
+   * `byAnchor`, so that even in the current generation the entry is then found
+   * only by its anchor, never by its position. Null when that generation is no
    * longer kept.
    */
-  target(key: string, revision: number): Targeted | null {
+  target(key: string, revision: number, byAnchor = false): Targeted | null {
     const generation = this.generations.get(revision) ?? this.searched.get(revision);
     const position = generation ? generation.findIndex((m) => m.key === key) : -1;
     if (!generation || position < 0) return null;
     const shown = generation[position]!;
-    const stale = revision !== this.revision;
+    const stale = revision !== this.revision || byAnchor;
     let resolution: Resolution = NOT_LOADED_NOW;
     if (!stale && shown.rendered) resolution = { status: 'exact', index: position };
     else if (stale && this.conversation) resolution = this.resolve(anchorIn(generation, position, this.conversation.id));
-    if (resolution.status !== 'exact' && resolution.status !== 'changed') return { shown, stale, resolution, message: null };
+    if (resolution.status !== 'exact' && resolution.status !== 'changed') return { shown, stale, differs: false, resolution, message: null };
     const message = this.live(resolution.index);
-    return message ? { shown, stale, resolution, message } : { shown, stale, resolution: PAGE_DIFFERS, message: null };
+    return message ? { shown, stale, differs: false, resolution, message } : { shown, stale, differs: true, resolution: PAGE_DIFFERS, message: null };
   }
 
   /**
