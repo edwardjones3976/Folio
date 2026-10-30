@@ -27,7 +27,7 @@ table below describes what is built.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Outline of exchanges | working | One entry per prompt and its replies. Labels are the first line of the prompt, as written. Headings from Claude's replies are listed under each entry. Entries that are not loaded in the page are labelled. |
-| Exact jump and highlight | working | Scrolls the original message (or heading) into view and outlines it for 4 seconds. Outline and search entries go to the exact message that was clicked, even among identical messages. Bookmarks are matched by their text and the messages around them, never by position; unloaded, unconfirmed, ambiguous or changed targets are reported, not guessed. |
+| Exact jump and highlight | working | Scrolls the original message (or heading) into view and outlines it for 4 seconds. Outline and search entries go to the exact message that was clicked, even among identical messages, as long as the page still shows what the list was drawn from. Bookmarks are matched by their text and both messages around them, never by position; unloaded, unconfirmed, ambiguous or changed targets are reported, not guessed. |
 | Local search | working | Case-insensitive; every word must appear; `"quotes"` for a phrase. Results show the exchange number, the speaker, a snippet and a statement of what was searched. Clicking a result jumps to it and highlights the term. |
 | Bookmarks | working | Saved locally with title, note and timestamps. Open re-opens the same chat and jumps to the message. Anchors that no longer resolve are labelled "Unresolved"; a single match that the messages around it cannot confirm is labelled "Not confirmed"; identical messages Folio cannot tell apart are labelled "Ambiguous". Open jumps to none of these. Live updates never discard an open edit. |
 | Coverage indicators | working | Reports loading indicators, a conversation that starts mid-way, edited/retried versions (only the shown version is indexed), messages without readable text, messages removed from the page by virtualization, and fallback detection. |
@@ -74,8 +74,8 @@ All code ships in the package; nothing is loaded remotely.
     the conversation id and title, the exchange number, and an anchor: role,
     content digest, occurrence, position, the content digests (not the text) of
     the messages just before and after it, how many known messages had the same
-    text, and **up to 160 characters from the start of the bookmarked message**
-    (used to recognize the message again).
+    text (informational; not used to match), and **up to 160 characters from
+    the start of the bookmarked message** (used to recognize the message again).
     Stored records that fail validation (including a second record with the id
     of an existing bookmark) are ignored but kept exactly as found; adding or
     editing bookmarks never removes them. Deleting a bookmark removes every
@@ -147,23 +147,31 @@ interface (`src/adapters/types.ts`):
 - Outline entries and search results jump by **live identity**: the message
   element Folio indexed for the entry that was clicked, in the version of the
   index the list was drawn from. No anchor is resolved, so the second of two
-  identical exchanges is reached as reliably as any other. If the page changed
-  after the list was drawn (and earlier messages loading can renumber entries),
-  Folio follows the same element when it is still in the page with the same
-  text after the same previous message; otherwise it resolves the entry's
-  anchor as strictly as a bookmark's, and the status line says that the page
-  changed.
+  identical exchanges is reached as reliably as any other. Before following
+  the element, Folio reads the page again and checks that it still shows
+  exactly what that version indexed: the same message elements in the same
+  order, each with the same speaker and text (a reply that is still being
+  written may grow, unless it is the one clicked). If anything differs, for
+  example the element now holds other text or the page reused or moved it,
+  Folio rebuilds its index from the page and treats the click as coming from
+  an older list.
+- A click on an older list (the page changed after the list was drawn, and
+  earlier messages loading can renumber entries) is never followed by its
+  element. Folio resolves the entry's anchor, saved as of that list, as
+  strictly as a bookmark's, and the status line says that the page changed.
 - Each message gets a content digest. A bookmark's anchor is the digest plus
   the digests of the messages just before and after it, in the manner of a W3C
   Web Annotation text quote selector (exact text plus prefix and suffix). A
   neighbour that is known both in the anchor and in the page, and differs, rules
   a message out. A target is **exact** only when exactly one message is left and
-  both neighbours match. One neighbour may be missing only when no message was
-  known on that side when the bookmark was saved (the first or latest message)
-  and no other message had the same text then. A single match without that
-  confirmation, for example because its neighbour is not loaded, is **not
-  confirmed**; several are **ambiguous**. If the text changed, at least 24
-  identical opening characters plus the same neighbour confirmation count as
+  **both** neighbours match. There are no exceptions: when no message was known
+  on one side when the bookmark was saved (the first or latest message), that
+  side can never be confirmed, because Folio cannot tell that claude.ai has
+  loaded the whole conversation, and a copy of the same text that Folio never
+  saw could fit as well. A single match without that confirmation, for example
+  because a neighbour is not loaded or was not known, is **not confirmed**;
+  several are **ambiguous**. If the text changed, at least 24 identical opening
+  characters plus the same confirmation by both neighbours count as
   **changed**; shorter messages only ever match exactly. Otherwise the target
   is **unresolved**. Position is never used. Folio jumps to a bookmark only when
   it is exact or changed.
@@ -188,8 +196,11 @@ npm run test:browser   # real Chrome
 
 - `tests/unit/`: text and digest handling, search, outline grouping, coverage,
   virtualization merge (including windows of identical messages), anchor
-  resolution (identical messages, partial pages, conflicting neighbours, short
-  messages, anchors without context), storage validation (including corrupted
+  resolution (identical messages, partial pages, conflicting neighbours, the
+  strict two-sided rule for first and latest messages, short messages, anchors
+  without context), the live index driven by an in-memory page (outline clicks
+  on elements whose text changed or that the page reused, and clicks on older
+  lists), storage validation (including corrupted
   records kept through add and edit, duplicates removed with the bookmark they
   copy, and write failures), feature statuses, the bundler, and a static
   privacy and permission audit of the manifest, sources, bundles, README, docs
@@ -197,9 +208,10 @@ npm run test:browser   # real Chrome
 - `tests/browser/adapter.test.ts`: runs the real adapter and index in Chrome on
   every synthetic fixture: loaded, partially loaded, branched, edge cases
   (including identical prompts with part of the page removed), fully identical
-  exchanges reached by live identity (including after the page changed), layout
-  drift, unrecognized, no conversation, and a 500-message conversation with
-  virtualization.
+  exchanges reached by live identity, clicks after the page changed (a reply
+  whose text changed, an element reused for an identical earlier reply, keys
+  renumbered by earlier messages loading), layout drift, unrecognized, no
+  conversation, and a 500-message conversation with virtualization.
 - `tests/browser/extension.test.ts`: loads the built `dist/` extension into Chrome
   and drives the real side panel (opened as a tab pinned with `?tabId=`) through
   the P0 stories: open, jump (including identical exchanges, a single message,
@@ -223,28 +235,46 @@ executable.
   markup, not checked on a live account. [`docs/MANUAL-LIVE-CHECK.html`](docs/MANUAL-LIVE-CHECK.html)
   describes the manual check that is still to do. The latest completion report
   is [`docs/P0-COMPLETION-REPORT.html`](docs/P0-COMPLETION-REPORT.html).
-- Folio cannot tell whether the first loaded message is the start of the
-  conversation, so it never uses "nothing before it" as evidence. A bookmarked
-  message at the top or bottom of what is loaded, whose neighbour on that side
-  was known when it was saved, is reported as not confirmed until that
-  neighbour is loaded. If the message after a bookmarked message changed (for
-  example the next prompt was edited, or a later reply regenerated), the
+- A bookmark of the first message Folio knew, or of the latest message, is
+  never exact: it shows "Not confirmed" and Open does not jump, even after the
+  conversation continues, because nothing was known on one side when it was
+  saved. This includes ☆ on the latest exchange, which bookmarks the latest
+  reply. Folio cannot tell whether the first loaded message is the start of
+  the conversation, so "nothing before it" is never evidence. Outline and
+  search clicks still reach these messages. To get a bookmark that can be
+  confirmed, bookmark the reply again after the next prompt has been sent.
+- A bookmarked message at the top or bottom of what is loaded, whose neighbour
+  on that side was known when it was saved, is reported as not confirmed until
+  that neighbour is loaded. If the message after a bookmarked message changed
+  (for example the next prompt was edited, or a later reply regenerated), the
   bookmark is unresolved, because Folio cannot tell that from another copy of
   the same text.
-- "No other message had the same text" is counted over the messages Folio knew
-  when the bookmark was saved. If an identical earlier exchange was not loaded
-  then, a bookmark of the first or latest message can later be confirmed by its
-  one known neighbour on the wrong copy.
 - Bookmarks saved by Folio 0.1.0 have no neighbour context. They are never
   exact or changed: when a message with the same text, or with at least 24
   identical opening characters, is in the page or was seen earlier, they are
   reported as ambiguous; otherwise unresolved. Bookmark the message again.
-  Bookmarks saved by the build before this one (commit `d1fba89`) have context
-  but no count of identical messages; they are exact only when both neighbours
-  match.
+  Bookmarks saved since commit `d1fba89` have context and follow the same
+  rule as new ones. A bookmark of the first or latest message saved by commit
+  `ff66a57`, which could show "Found in this page", now shows "Not confirmed".
 - Outline and search clicks follow the index version their list was drawn from.
   Folio keeps the last 8 versions, plus the versions behind the last 2 searches;
   an older click is refused with a request to choose again or search again.
+- A click on a list drawn before the page changed is followed only when the
+  entry's anchor, as of that list, is exact or changed. The first or latest
+  entry of that list, and entries among identical exchanges, are then refused
+  with "The page changed after this list was shown"; choose them again from
+  the updated list.
+- While a reply is being written, a click on that reply (or a heading in it)
+  can be refused: its text changed after the list was drawn, and as the latest
+  message its anchor cannot be confirmed. Clicks on other messages are not
+  affected. A list drawn before a page change that Folio has not yet indexed
+  (it re-reads the page within about a second of a change) also sends the
+  click through the anchor rules.
+- Live identity assumes that when every loaded message element still holds the
+  same speaker and text in the same order, the page still shows the same
+  messages. A page that re-bound all of its loaded elements at once to another
+  run of identical messages would not be detected. Whether claude.ai reuses
+  message elements at all is UNKNOWN.
 - Erase all reaches the claude.ai tabs where Folio's content script is running.
   Tabs that were open before Folio was installed have no Folio index to erase.
 - Folio indexes only what claude.ai has loaded in the page. It does not scroll,

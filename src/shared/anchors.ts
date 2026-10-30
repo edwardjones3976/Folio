@@ -7,10 +7,12 @@
 // - A side (the previous or the next message) that both the anchor and the
 //   candidate name, and that differs, rules the candidate out.
 // - "exact" needs identical text, exactly one candidate left, and both sides
-//   matching. One side may be unknown only when nothing was known on that side
-//   when the anchor was made AND no other message had the same text then
-//   (`copies` is 1). A side that is unknown because the page has not loaded it
-//   never counts as confirmation.
+//   matching. There are no exceptions. A side where nothing was known when the
+//   anchor was made (the first or latest known message) can never be matched:
+//   Folio cannot tell that claude.ai has loaded the whole conversation, so
+//   "nothing there" is never confirmed, and a copy of the same text that was
+//   never loaded could fit as well. A side that is unknown because the page has
+//   not loaded it never counts either.
 // - A single remaining candidate without that confirmation is "probable": it is
 //   reported, never jumped to. Several are "ambiguous".
 // - "changed" (a message whose text differs) needs at least MIN_PREFIX_MATCH
@@ -96,27 +98,23 @@ function score(anchor: MessageAnchor, candidates: readonly AnchorCandidate[], ke
 
 const conflicts = (s: Scored) => s.before === 'conflict' || s.after === 'conflict';
 
-/** True when the neighbours identify the only remaining candidate (rules at the top of this file). */
-function confirmed(s: Scored, copies: number | undefined): boolean {
-  if (s.before === 'match' && s.after === 'match') return true;
-  const oneSideNeverKnown = (s.before === 'match' && s.after === 'unsaved') || (s.before === 'unsaved' && s.after === 'match');
-  return oneSideNeverKnown && copies === 1;
+/** True when the neighbours identify the only remaining candidate: both sides match (rules at the top of this file). */
+function confirmed(s: Scored): boolean {
+  return s.before === 'match' && s.after === 'match';
 }
 
 /** Why the only remaining candidate is not confirmed, in the user's terms. */
-function unconfirmedReason(s: Scored, copies: number | undefined): string {
+function unconfirmedReason(s: Scored): string {
   const unloaded = [s.before === 'unloaded' ? 'before' : '', s.after === 'unloaded' ? 'after' : ''].filter(Boolean);
   if (unloaded.length > 0) {
     return `the message ${unloaded.join(' and ')} it is not loaded, so Folio cannot compare it with the saved one. Scroll the chat to load the messages around it, then try again`;
   }
   if (s.before !== 'match' && s.after !== 'match') return 'no message next to it was known when this was saved, so nothing can confirm it';
-  const side = s.before === 'match' ? 'before' : 'after';
-  return copies === undefined
-    ? `only the message ${side} it can be compared, and this bookmark does not record whether other messages had the same text`
-    : `${copies} messages had this text when it was saved and only the message ${side} it can be compared, so Folio cannot tell which one it is`;
+  const [side, other] = s.before === 'match' ? ['before', 'after'] : ['after', 'before'];
+  return `only the message ${side} it can be compared. No message ${other} it was known when this was saved, and Folio confirms a message only when the messages on both sides of it match`;
 }
 
-function resolveIdentical(anchor: MessageAnchor, same: readonly Scored[]): Resolution {
+function resolveIdentical(same: readonly Scored[]): Resolution {
   const viable = same.filter((s) => !conflicts(s));
   if (viable.length === 0) {
     return {
@@ -135,8 +133,8 @@ function resolveIdentical(anchor: MessageAnchor, same: readonly Scored[]): Resol
     };
   }
   const only = viable[0]!;
-  if (!confirmed(only, anchor.copies)) {
-    return { status: 'probable', index: only.index, note: `One message has the saved text, but ${unconfirmedReason(only, anchor.copies)}.` };
+  if (!confirmed(only)) {
+    return { status: 'probable', index: only.index, note: `One message has the saved text, but ${unconfirmedReason(only)}.` };
   }
   if (!only.candidate.rendered) return NOT_LOADED;
   return same.length > 1
@@ -153,11 +151,11 @@ function resolveChanged(anchor: MessageAnchor, candidates: readonly AnchorCandid
     return { status: 'ambiguous', note: `${viable.length} messages start the same way and none matches exactly; Folio will not guess.` };
   }
   const only = viable[0]!;
-  if (!confirmed(only, anchor.copies)) {
+  if (!confirmed(only)) {
     return {
       status: 'probable',
       index: only.index,
-      note: `One message starts the same way but its text differs, and ${unconfirmedReason(only, anchor.copies)}.`,
+      note: `One message starts the same way but its text differs, and ${unconfirmedReason(only)}.`,
     };
   }
   if (!only.candidate.rendered) return NOT_LOADED;
@@ -178,5 +176,5 @@ export function resolveAnchor(anchor: MessageAnchor, conversationId: string | nu
     const similar = anchor.prefix.length >= MIN_PREFIX_MATCH && candidates.some((c) => c.role === anchor.role && similarOpening(anchor.prefix, c.text));
     return same.length > 0 || similar ? LEGACY : NOT_FOUND;
   }
-  return same.length > 0 ? resolveIdentical(anchor, same) : resolveChanged(anchor, candidates);
+  return same.length > 0 ? resolveIdentical(same) : resolveChanged(anchor, candidates);
 }

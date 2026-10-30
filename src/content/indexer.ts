@@ -39,14 +39,12 @@ export interface Targeted extends Located {
 }
 
 /**
- * One state of the index. Outline entries and search results name messages by
- * key, and a key is only meaningful within the generation (snapshot revision)
- * it came from: when earlier messages load, occurrence numbers can shift.
+ * One state of the index: the known messages of one snapshot revision. Outline
+ * entries and search results name messages by key, and a key is only meaningful
+ * within the generation it came from: when earlier messages load, occurrence
+ * numbers can shift.
  */
-interface Generation {
-  known: IndexedMessage[];
-  elements: Map<string, DiscoveredMessage>;
-}
+type Generation = readonly IndexedMessage[];
 
 /** Recent generations, so a click on a list drawn just before the page changed can still be followed. */
 const RECENT_GENERATIONS = 8;
@@ -59,6 +57,12 @@ const NOT_LOADED_NOW: Resolution = {
   status: 'unresolved',
   reason: 'not-loaded',
   note: 'The message is not loaded in the page right now. Scroll the chat to load it, then try again.',
+};
+
+const PAGE_DIFFERS: Resolution = {
+  status: 'unresolved',
+  reason: 'not-found',
+  note: 'The page no longer shows the messages as Folio indexed them. Choose the entry again from the updated list.',
 };
 
 /** The anchor for `known[position]`: its text, the messages around it and how many share its text. */
@@ -175,7 +179,7 @@ export class LiveIndex {
       this.revision += 1;
     }
     // Same keys when unchanged; the elements may still have been re-rendered.
-    keep(this.generations, this.revision, { known: this.known, elements: this.elements }, RECENT_GENERATIONS);
+    keep(this.generations, this.revision, this.known, RECENT_GENERATIONS);
     return changed;
   }
 
@@ -228,7 +232,7 @@ export class LiveIndex {
 
   /** Keeps the current generation while search results from it are on screen; returns its revision. */
   keepForSearch(): number {
-    keep(this.searched, this.revision, { known: this.known, elements: this.elements }, SEARCHED_GENERATIONS);
+    keep(this.searched, this.revision, this.known, SEARCHED_GENERATIONS);
     return this.revision;
   }
 
@@ -251,8 +255,8 @@ export class LiveIndex {
     return anchor;
   }
 
-  /** Persistent resolution, for stored bookmarks: by text and neighbours, never by position. */
-  locate(anchor: MessageAnchor): Located {
+  /** Resolves an anchor against the known messages: by text and neighbours, never by position. */
+  private resolve(anchor: MessageAnchor): Resolution {
     const candidates: AnchorCandidate[] = this.known.map((m, i) => ({
       role: m.role,
       digest: m.digest,
@@ -261,7 +265,12 @@ export class LiveIndex {
       before: this.neighbour(i - 1),
       after: this.neighbour(i + 1),
     }));
-    const resolution = resolveAnchor(anchor, this.conversation?.id ?? null, candidates);
+    return resolveAnchor(anchor, this.conversation?.id ?? null, candidates);
+  }
+
+  /** Persistent resolution, for stored bookmarks. Callers refresh the index from the page first. */
+  locate(anchor: MessageAnchor): Located {
+    const resolution = this.resolve(anchor);
     if (resolution.status !== 'exact' && resolution.status !== 'changed') return { resolution, message: null };
     const target = this.known[resolution.index]!;
     const message = this.elements.get(target.key) ?? null;
@@ -272,37 +281,48 @@ export class LiveIndex {
   /**
    * Direct navigation from the outline or search: the entry the panel showed as
    * `key` in generation `revision`. In the current generation that is the
-   * indexed message's own element; no anchor is resolved. If the page changed
-   * since, the entry is found again: by its element when that is still in the
-   * page holding the same message after the same previous message, otherwise by
-   * its anchor in that generation, resolved as strictly as a bookmark. Null when
-   * that generation is no longer kept.
+   * indexed message's own element; no anchor is resolved. In an earlier
+   * generation (the page changed after the list was drawn) the entry's anchor in
+   * that generation is resolved against the current one, exactly as a bookmark's
+   * is. Either way the message is followed only while the page still shows what
+   * the current generation indexed (`live`); otherwise `message` is null and the
+   * caller refreshes the index and asks again. Null when that generation is no
+   * longer kept.
    */
   target(key: string, revision: number): Targeted | null {
     const generation = this.generations.get(revision) ?? this.searched.get(revision);
-    const position = generation ? generation.known.findIndex((m) => m.key === key) : -1;
+    const position = generation ? generation.findIndex((m) => m.key === key) : -1;
     if (!generation || position < 0) return null;
-    const shown = generation.known[position]!;
-    if (revision === this.revision) {
-      const message = this.elements.get(key);
-      if (!shown.rendered || !message?.element.isConnected) return { shown, stale: false, resolution: NOT_LOADED_NOW, message: null };
-      return { shown, stale: false, resolution: { status: 'exact', index: position }, message };
-    }
-    return { shown, stale: true, ...this.relocate(generation, position) };
+    const shown = generation[position]!;
+    const stale = revision !== this.revision;
+    let resolution: Resolution = NOT_LOADED_NOW;
+    if (!stale && shown.rendered) resolution = { status: 'exact', index: position };
+    else if (stale && this.conversation) resolution = this.resolve(anchorIn(generation, position, this.conversation.id));
+    if (resolution.status !== 'exact' && resolution.status !== 'changed') return { shown, stale, resolution, message: null };
+    const message = this.live(resolution.index);
+    return message ? { shown, stale, resolution, message } : { shown, stale, resolution: PAGE_DIFFERS, message: null };
   }
 
-  private relocate(generation: Generation, position: number): Located {
-    const shown = generation.known[position]!;
-    const element = generation.elements.get(shown.key)?.element;
-    const now = element?.isConnected ? this.known.findIndex((m) => m.rendered && this.elements.get(m.key)?.element === element) : -1;
-    const current = this.known[now];
-    if (current && current.id === shown.id) {
-      const before = { then: generation.known[position - 1]?.id, now: this.known[now - 1]?.id };
-      if (!before.then || !before.now || before.then === before.now) {
-        return { resolution: { status: 'exact', index: now }, message: this.elements.get(current.key)! };
-      }
-    }
-    if (!this.conversation) return { resolution: NOT_LOADED_NOW, message: null };
-    return this.locate(anchorIn(generation.known, position, this.conversation.id));
+  /**
+   * The message at `index` of the current generation as the page shows it now,
+   * or null unless the page still shows exactly what that generation indexed:
+   * the same conversation, and the same message elements in the same order,
+   * each with the same role and text. Only a reply that was still being written
+   * may have changed, and not when it is the message asked for. So an element
+   * that now holds other text, or that the page reused or moved, is never
+   * followed.
+   */
+  private live(index: number): DiscoveredMessage | null {
+    const wanted = this.known[index];
+    if (!wanted?.rendered || this.adapter.conversation(this.location, this.doc)?.id !== this.conversation?.id) return null;
+    const loaded = this.known.filter((m) => m.rendered);
+    const page = this.adapter.discover(this.doc).messages;
+    if (page.length !== loaded.length) return null;
+    const same = loaded.every((m, i) => {
+      const now = page[i]!;
+      if (now.element !== this.elements.get(m.key)?.element || now.role !== m.role) return false;
+      return (m.streaming && m !== wanted) || digest(now.text) === m.digest;
+    });
+    return same ? page[wanted.ordinal]! : null;
   }
 }

@@ -128,8 +128,9 @@ export interface MessageAnchor {
   context?: AnchorContext;
   /**
    * Known messages (loaded or seen earlier) with the same role and text when the
-   * anchor was made, itself included. Missing on anchors saved before it was
-   * recorded; then an unknown neighbour never counts as confirmation.
+   * anchor was made, itself included (informational; never used to resolve: it
+   * counts only messages Folio had seen, so it cannot prove a text was unique).
+   * Missing on anchors saved before it was recorded.
    */
   copies?: number;
   headingIndex?: number;

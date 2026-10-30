@@ -166,9 +166,11 @@ function navigate(located: Located, options: JumpOptions): JumpResult {
 }
 
 /**
- * Outline and search clicks: follows the entry the panel showed by live identity
- * (LiveIndex.target), not by resolving an anchor. The index is rebuilt only when
- * that entry cannot be followed as it is.
+ * Outline and search clicks: follows the entry the panel showed (LiveIndex.target),
+ * by live identity while the list's version of the index is current, otherwise by
+ * its anchor, as strictly as a bookmark. Only a page that still shows what the
+ * index holds is followed; when the entry cannot be followed as it is, the index
+ * is rebuilt from the page and the entry is asked for again.
  */
 function go(request: Extract<PanelRequest, { type: 'go' }>): JumpResult {
   const { key, revision, headingIndex, highlightTerm } = request;

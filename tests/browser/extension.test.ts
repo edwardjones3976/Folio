@@ -384,10 +384,13 @@ describe('untrusted content (synthetic)', () => {
 });
 
 describe('outline clicks follow live identity (synthetic, review finding 3)', () => {
-  const highlightedPrompts = () =>
-    page.evaluate<number[]>(() =>
-      Array.from(document.querySelectorAll('[data-testid="user-message"]')).flatMap((el, i) => (el.hasAttribute('data-folio-highlight') ? [i] : [])),
+  const highlightedIn = (selector: string) =>
+    page.evaluate<number[]>(
+      (s: string) => Array.from(document.querySelectorAll(s)).flatMap((el, i) => (el.hasAttribute('data-folio-highlight') ? [i] : [])),
+      selector,
     );
+  const highlightedPrompts = () => highlightedIn('[data-testid="user-message"]');
+  const highlightedReplies = () => highlightedIn('[data-is-streaming]');
   const clearPageHighlights = () =>
     page.evaluate(() => {
       for (const el of Array.from(document.querySelectorAll('[data-folio-highlight]'))) el.removeAttribute('data-folio-highlight');
@@ -436,9 +439,9 @@ describe('outline clicks follow live identity (synthetic, review finding 3)', ()
     assert.deepEqual(await highlightedPrompts(), [0]);
   });
 
-  it('a click on an entry drawn before the page changed is followed to the same message, and says so', async () => {
+  it('a click on an entry drawn before the page changed is found again only by its anchor, and says so (correction 3)', async () => {
     const { snapshot } = await askContent(null);
-    const second = snapshot.messages[2]!;
+    const [, firstReply, second] = snapshot.messages;
     await page.evaluate(() => {
       const turn = document.createElement('div');
       turn.setAttribute('data-test-render-count', '1');
@@ -450,10 +453,20 @@ describe('outline clicks follow live identity (synthetic, review finding 3)', ()
     });
     await outlineSummary('3 exchanges, 5 messages, 0 reply headings.');
     await clearPageHighlights();
-    const went = await askContent<{ result: JumpResult }>({ type: 'go', key: second.key, revision: snapshot.revision });
-    assert.deepEqual(went.reply?.result, { status: 'jumped', note: 'The page changed after this list was shown; Folio found the same message again.' });
-    assert.deepEqual(await highlightedPrompts(), [1]);
-    const expired = await askContent<{ result: JumpResult }>({ type: 'go', key: second.key, revision: -2 });
+    // The first reply: both of its neighbours still match, and the other "Done." is now followed by a different prompt.
+    const went = await askContent<{ result: JumpResult }>({ type: 'go', key: firstReply!.key, revision: snapshot.revision });
+    assert.deepEqual(went.reply?.result, {
+      status: 'jumped',
+      note: 'The page changed after this list was shown; Folio found the same message again. 2 messages have identical text; matched by the messages around it.',
+    });
+    assert.deepEqual(await highlightedReplies(), [0]);
+    // The second prompt: the first prompt could also have a "Done." before it, so the anchor cannot tell them apart.
+    await clearPageHighlights();
+    const refused = await askContent<{ result: JumpResult }>({ type: 'go', key: second!.key, revision: snapshot.revision });
+    assert.equal(refused.reply?.result.status, 'ambiguous');
+    assert.match(refused.reply!.result.note, /^The page changed after this list was shown\. 2 messages have identical text/);
+    assert.deepEqual(await highlightedPrompts(), []);
+    const expired = await askContent<{ result: JumpResult }>({ type: 'go', key: second!.key, revision: -2 });
     assert.equal(expired.reply?.result.status, 'unresolved');
     assert.match(expired.reply!.result.note, /^The page changed after this list was shown, and Folio no longer has that version of it\./);
   });

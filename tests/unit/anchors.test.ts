@@ -77,11 +77,11 @@ describe('resolveAnchor', () => {
     assert.equal(reason(resolveAnchor(anchorAt(chat, 1), CONV, known(list))), 'not-loaded');
   });
 
-  it('accepts a message that kept streaming after it was saved by its opening text, labelled as changed', () => {
+  it('does not confirm a reply that kept streaming after it was saved as the latest message: nothing was known after it', () => {
     const saved: Msg[] = [chat[0]!, ['assistant', answer.slice(0, 60)]];
     const now: Msg[] = [chat[0]!, ['assistant', answer], chat[2]!];
     const result = resolveAnchor(anchorAt(saved, 1), CONV, known(now));
-    assert.deepEqual([result.status, at(result)], ['changed', 1]);
+    assert.deepEqual([result.status, at(result)], ['probable', null]);
   });
 
   it('accepts a changed message whose neighbours both still match, labelled as changed', () => {
@@ -214,34 +214,41 @@ describe('resolveAnchor: both neighbours must agree (review finding 1, correctio
     assert.equal(result.status, 'ambiguous');
   });
 
-  it('confirms the latest reply by the message before it when nothing followed it and its text was unique', () => {
+  it('never confirms the latest message by the message before it alone, even when its text was unique (correction 3)', () => {
     const anchor = anchorAt([chat[0]!, chat[1]!], 1);
     assert.deepEqual([anchor.context, anchor.copies], [{ before: `human:${digest(chat[0]![1])}`, after: null }, 1]);
-    const continued = resolveAnchor(anchor, CONV, known(chat));
-    assert.deepEqual([continued.status, at(continued)], ['exact', 1]);
+    for (const page of [chat.slice(0, 2), chat]) {
+      const result = resolveAnchor(anchor, CONV, known(page));
+      assert.deepEqual([result.status, at(result)], ['probable', null]);
+      assert.match(result.status === 'probable' ? result.note : '', /only the message before it can be compared\. No message after it was known when this was saved/);
+    }
   });
 
-  it('confirms the first known message by the message after it when nothing was known before it and its text was unique', () => {
+  it('never confirms the first known message by the message after it alone, even when its text was unique (correction 3)', () => {
     const anchor = anchorAt(chat.slice(4), 0);
     assert.equal(anchor.copies, 1);
     const result = resolveAnchor(anchor, CONV, known(chat));
-    assert.deepEqual([result.status, at(result)], ['exact', 4]);
+    assert.deepEqual([result.status, at(result)], ['probable', null]);
   });
 
-  it('never confirms by one side when other copies of the text were known when it was saved', () => {
-    // The latest "Continue", saved while an earlier one was known: nothing was known after it.
+  it('the review probe (correction 3): anchors saved while only the later "Continue"/"Done." exchange was known are not exact on the earlier one', () => {
+    const earlierOnly = known(loop.slice(0, 2));
+    for (const index of [0, 1]) {
+      const anchor = anchorAt(loop.slice(2), index);
+      assert.equal(anchor.copies, 1, 'only one copy was known when it was saved');
+      const result = resolveAnchor(anchor, CONV, earlierOnly);
+      assert.notEqual(result.status, 'exact', 'ff66a57: exact');
+      assert.deepEqual([result.status, at(result)], ['probable', null]);
+    }
+  });
+
+  it('copies is informational: a count of 1 never stands in for a missing neighbour', () => {
     const anchor = anchorAt(loop.slice(0, 3), 2);
     assert.deepEqual([anchor.context?.after, anchor.copies], [null, 2]);
     const page = known(loop.slice(1, 3));
-    assert.equal(resolveAnchor(anchor, CONV, page).status, 'probable');
-    assert.equal(resolveAnchor({ ...anchor, copies: 1 }, CONV, page).status, 'exact', 'the same evidence suffices for text that was unique');
-  });
-
-  it('never confirms by one side when the anchor does not record how many copies there were', () => {
-    const { copies: _copies, ...older } = anchorAt([chat[0]!, chat[1]!], 1);
-    const result = resolveAnchor(older, CONV, known(chat));
-    assert.equal(result.status, 'probable');
-    assert.equal(at(result), null);
+    for (const copies of [2, 1, undefined]) {
+      assert.equal(resolveAnchor({ ...anchor, copies }, CONV, page).status, 'probable', String(copies));
+    }
   });
 
   it('does not confirm a message when no message next to it was known when it was saved', () => {

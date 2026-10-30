@@ -105,7 +105,10 @@ describe('claude.ai adapter on a fully loaded conversation (synthetic)', () => {
     await open('loaded');
     const snapshot = await call<Snapshot>('snapshot');
     const last = snapshot.messages[11]!;
-    await call('jump', await call<MessageAnchor>('anchorFor', last.key), {});
+    // The latest message, reached as an outline click does (by live identity): as a
+    // bookmark it would not be confirmed, because nothing was known after it.
+    assert.equal((await call<{ resolution: Resolution }>('locate', await call<MessageAnchor>('anchorFor', last.key))).resolution.status, 'probable');
+    await call('go', last.key, snapshot.revision, {});
     const visible = await page.evaluate<{ attr: string | null; top: number; height: number }>(() => {
       const el = document.querySelectorAll('[data-is-streaming]')[5]!;
       return { attr: el.getAttribute('data-folio-highlight'), top: el.getBoundingClientRect().top, height: innerHeight };
@@ -346,7 +349,7 @@ describe('outline and search clicks follow live identity, not anchors (synthetic
     assert.deepEqual(await highlighted(PROMPTS), [0]);
   });
 
-  it('follows the entry the panel showed when earlier messages load and renumber the keys', async () => {
+  it('does not follow an entry drawn before earlier messages loaded and renumbered the keys; the updated list reaches it (correction 3)', async () => {
     await open('repeated');
     await page.evaluate(() => {
       const turns = Array.from(document.querySelectorAll('[data-test-render-count]'));
@@ -361,9 +364,57 @@ describe('outline and search clicks follow live identity, not anchors (synthetic
     assert.equal(now.messages.length, 4);
     assert.equal(now.messages[0]!.key, shown.key, 'the same key now names the first copy');
 
+    // Nothing was known before it in the list that was shown, so its anchor cannot tell the two copies apart.
     const went = await call<Went>('go', shown.key, shownList.revision, {});
-    assert.deepEqual([went.stale, went.jumped], [true, true]);
-    assert.deepEqual(await highlighted(PROMPTS), [1], 'the copy that was clicked, not the one the key names now');
+    assert.deepEqual([went.stale, went.jumped, went.resolution.status], [true, false, 'ambiguous']);
+    assert.deepEqual(await highlighted(PROMPTS), []);
+    const fresh = await call<Went>('go', now.messages[2]!.key, now.revision, {});
+    assert.deepEqual([fresh.stale, fresh.jumped], [false, true]);
+    assert.deepEqual(await highlighted(PROMPTS), [1]);
+  });
+
+  it('does not follow an element whose text changed before Folio refreshed (review finding 2)', async () => {
+    await open('loaded');
+    const shown = await call<Snapshot>('snapshot');
+    await page.evaluate(() => {
+      document.querySelectorAll('[data-is-streaming]')[1]!.querySelector('.standard-markdown')!.textContent = 'This reply was regenerated and now says something else entirely.';
+    });
+    // No refresh in between: the click names the current generation, whose element now holds other text.
+    const went = await call<Went>('go', shown.messages[3]!.key, shown.revision, {});
+    assert.deepEqual([went.stale, went.jumped, went.resolution.status], [true, false, 'unresolved'], 'ff66a57: not stale, exact, jumped');
+    assert.deepEqual(await highlighted(REPLIES), []);
+  });
+
+  it('does not follow a reused element to an identical earlier reply after the page changed (review finding 3)', async () => {
+    await open('repeated');
+    await page.evaluate(() => {
+      const prompt = (text: string) => {
+        const turn = document.createElement('div');
+        turn.setAttribute('data-test-render-count', '1');
+        const el = document.createElement('div');
+        el.setAttribute('data-testid', 'user-message');
+        el.textContent = text;
+        turn.append(el);
+        return turn;
+      };
+      document.querySelectorAll('[data-test-render-count]')[1]!.after(prompt('Who approved the deploy?'));
+      document.getElementById('conversation')!.append(prompt('Write the follow-up email.'));
+    });
+    const shown = await call<Snapshot>('snapshot');
+    assert.deepEqual(shown.messages.map((m) => m.excerpt), ['Continue', 'Done.', 'Who approved the deploy?', 'Continue', 'Done.', 'Write the follow-up email.']);
+    await page.evaluate(() => {
+      // The later reply's element now shows the earlier reply; the rest is virtualized away.
+      const turns = Array.from(document.querySelectorAll('[data-test-render-count]'));
+      turns[0]!.after(turns[4]!);
+      for (const i of [1, 3, 5]) turns[i]!.remove();
+    });
+    const now = await call<Snapshot>('snapshot');
+    assert.deepEqual(now.messages.map((m) => m.rendered), [true, true, true, false, false, false]);
+
+    const went = await call<Went>('go', shown.messages[4]!.key, shown.revision, {});
+    assert.deepEqual([went.stale, went.jumped, went.resolution.status], [true, false, 'unresolved'], 'ff66a57: exact index 1, jumped');
+    assert.equal(went.resolution.status === 'unresolved' && went.resolution.reason, 'not-loaded');
+    assert.deepEqual(await highlighted(REPLIES), []);
   });
 
   it('refuses when the page changed and the entry can no longer be confirmed', async () => {
