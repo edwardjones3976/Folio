@@ -13,9 +13,11 @@ import type { ContentPush, ContentReply, PanelRequest, PingReply } from '../shar
 import { search } from '../shared/search.ts';
 import { SETTINGS_KEY, parseSettings } from '../shared/storage.ts';
 import { computeCoverage } from '../shared/coverage.ts';
-import type { Resolution, Snapshot } from '../shared/types.ts';
+import type { JumpResult, Resolution, Snapshot } from '../shared/types.ts';
 import { LiveIndex } from './indexer.ts';
+import type { Located } from './indexer.ts';
 import { clearHighlights, jumpTo } from './navigate.ts';
+import type { JumpOptions } from './navigate.ts';
 
 const DEBOUNCE_MS = 250;
 const MAX_WAIT_MS = 1000;
@@ -33,6 +35,10 @@ let erasedPath: string | null = null;
 
 const ERASED_NOTE = "Folio's index of this page was erased. Choose Re-index this page in the Folio panel to read it again.";
 const ERASED_RESOLUTION: Resolution = { status: 'unresolved', reason: 'not-loaded', note: ERASED_NOTE };
+const PAGE_CHANGED = 'The page changed after this list was shown.';
+const FOUND_AGAIN = 'The page changed after this list was shown; Folio found the same message again.';
+const LIST_EXPIRED =
+  'The page changed after this list was shown, and Folio no longer has that version of it. Choose the entry again from the updated list, or search again.';
 
 /** True while the erase pause applies; it ends when the page moves to another path. */
 function erased(): boolean {
@@ -142,6 +148,47 @@ function reply(port: chrome.runtime.Port, message: ContentReply | ContentPush): 
   }
 }
 
+/** Scrolls to and highlights a located message; only an exact or changed match navigates. */
+function navigate(located: Located, options: JumpOptions): JumpResult {
+  const { resolution, message } = located;
+  if (!message || (resolution.status !== 'exact' && resolution.status !== 'changed')) {
+    // Probable, ambiguous and unresolved targets are labelled instead.
+    const status = resolution.status === 'probable' || resolution.status === 'ambiguous' ? resolution.status : 'unresolved';
+    return { status, note: resolution.note ?? 'Not found.' };
+  }
+  const outcome = jumpTo(document, message, options);
+  const note = [resolution.note, outcome.headingFallback ? 'The heading was not found; showing the start of the message.' : ''].filter(Boolean).join(' ');
+  return {
+    status: resolution.status === 'changed' ? 'jumped-changed' : 'jumped',
+    note,
+    ...(outcome.headingFallback ? { headingFallback: true } : {}),
+  };
+}
+
+/**
+ * Outline and search clicks: follows the entry the panel showed by live identity
+ * (LiveIndex.target), not by resolving an anchor. The index is rebuilt only when
+ * that entry cannot be followed as it is.
+ */
+function go(request: Extract<PanelRequest, { type: 'go' }>): JumpResult {
+  const { key, revision, headingIndex, highlightTerm } = request;
+  if (typeof key !== 'string' || !Number.isInteger(revision)) return { status: 'unresolved', note: 'Invalid request.' };
+  let target = index.target(key, revision);
+  if (!target?.message) {
+    if (refreshIndex()) broadcast();
+    target = index.target(key, revision);
+  }
+  if (!target) return { status: 'unresolved', note: LIST_EXPIRED };
+  const heading = headingIndex === undefined ? undefined : target.shown.headings[headingIndex];
+  const result = navigate(target, {
+    ...(heading ? { headingIndex: heading.index, headingText: heading.text } : {}),
+    ...(highlightTerm ? { highlightTerm: String(highlightTerm) } : {}),
+  });
+  if (!target.stale) return result;
+  const found = result.status === 'jumped' || result.status === 'jumped-changed';
+  return { ...result, note: [found ? FOUND_AGAIN : PAGE_CHANGED, result.note].filter(Boolean).join(' ') };
+}
+
 function handle(port: chrome.runtime.Port, request: PanelRequest): void {
   const { requestId } = request;
   if (!settingsLoaded) {
@@ -160,40 +207,26 @@ function handle(port: chrome.runtime.Port, request: PanelRequest): void {
     reply(port, { type: 'reindex', requestId });
     return;
   }
-  if (refreshIndex()) broadcast();
+  // Outline and search clicks and new bookmarks name a message as the panel showed
+  // it, so they must not rebuild the index first; every other request reads the page now.
+  if (request.type !== 'go' && request.type !== 'anchor-for' && refreshIndex()) broadcast();
   const isErased = erased();
   switch (request.type) {
     case 'jump': {
-      if (isErased) {
-        reply(port, { type: 'jump', requestId, result: { status: 'unresolved', note: ERASED_NOTE } });
-        return;
-      }
-      const { resolution, message } = index.locate(request.anchor);
-      // Only an exact or changed match navigates; ambiguous and unresolved targets are labelled instead.
-      if (!message || (resolution.status !== 'exact' && resolution.status !== 'changed')) {
-        const status = resolution.status === 'ambiguous' ? 'ambiguous' : 'unresolved';
-        reply(port, { type: 'jump', requestId, result: { status, note: resolution.note ?? 'Not found.' } });
-        return;
-      }
-      const outcome = jumpTo(document, message, {
-        headingIndex: request.anchor.headingIndex,
-        headingText: request.anchor.headingText,
-        highlightTerm: request.highlightTerm,
-      });
-      const notes = [resolution.note, outcome.headingFallback ? 'The saved heading was not found; showing the start of the message.' : '']
-        .filter(Boolean)
-        .join(' ');
-      reply(port, {
-        type: 'jump',
-        requestId,
-        result: {
-          status: resolution.status === 'changed' ? 'jumped-changed' : 'jumped',
-          note: notes,
-          ...(outcome.headingFallback ? { headingFallback: true } : {}),
-        },
-      });
+      // A stored bookmark: resolved by its anchor.
+      const result = isErased
+        ? { status: 'unresolved' as const, note: ERASED_NOTE }
+        : navigate(index.locate(request.anchor), {
+            headingIndex: request.anchor.headingIndex,
+            headingText: request.anchor.headingText,
+            highlightTerm: request.highlightTerm,
+          });
+      reply(port, { type: 'jump', requestId, result });
       return;
     }
+    case 'go':
+      reply(port, { type: 'jump', requestId, result: isErased ? { status: 'unresolved', note: ERASED_NOTE } : go(request) });
+      return;
     case 'search': {
       const result = search(index.searchDocs(), String(request.query));
       const notLoaded = result.searchedNotLoaded > 0 ? ` and ${result.searchedNotLoaded} seen earlier but no longer loaded` : '';
@@ -201,12 +234,14 @@ function handle(port: chrome.runtime.Port, request: PanelRequest): void {
         ? `Nothing was searched. ${ERASED_NOTE}`
         : `Searched ${result.searchedLoaded} messages loaded in this page${notLoaded}. ` +
           'Not searched: messages claude.ai has not loaded, other branch versions, images, files and artifacts.';
-      reply(port, { type: 'search', requestId, result, coverage });
+      reply(port, { type: 'search', requestId, result, coverage, revision: index.keepForSearch() });
       return;
     }
-    case 'anchor-for':
-      reply(port, { type: 'anchor-for', requestId, anchor: index.anchorFor(request.key, request.headingIndex) });
+    case 'anchor-for': {
+      const anchor = isErased || !Number.isInteger(request.revision) ? null : index.anchorFor(request.key, request.headingIndex, request.revision);
+      reply(port, { type: 'anchor-for', requestId, anchor });
       return;
+    }
     case 'resolve':
       reply(port, {
         type: 'resolve',

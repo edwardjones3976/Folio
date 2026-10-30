@@ -18,6 +18,8 @@ export function describeCheck(check: BookmarkCheck): { text: string; tone: 'ok' 
       return { text: 'Found in this page', tone: 'ok' };
     case 'changed':
       return { text: `Found, but changed: ${check.note}`, tone: 'warn' };
+    case 'probable':
+      return { text: `Not confirmed: ${check.note}`, tone: 'warn' };
     case 'ambiguous':
       return { text: `Ambiguous: ${check.note}`, tone: 'warn' };
     case 'unresolved':

@@ -13,6 +13,7 @@ export const FIXTURES = {
   drifted: { path: '/chat/55555555-5555-4555-8555-555555555555', file: 'drifted.html' },
   unrecognized: { path: '/chat/66666666-6666-4666-8666-666666666666', file: 'unrecognized.html' },
   long: { path: '/chat/77777777-7777-4777-8777-777777777777', file: null },
+  repeated: { path: '/chat/88888888-8888-4888-8888-888888888888', file: 'repeated.html' },
   home: { path: '/new', file: 'home.html' },
 } as const;
 

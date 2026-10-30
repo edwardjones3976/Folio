@@ -27,6 +27,7 @@ on these fixtures does **not** prove Folio works on live claude.ai.
 | `drifted.html` | `/chat/55555555-5555-4555-8555-555555555555` | data attributes missing; only CSS classes remain |
 | `unrecognized.html` | `/chat/66666666-6666-4666-8666-666666666666` | a chat URL whose markup Folio does not recognize |
 | `long.ts` (generated) | `/chat/77777777-7777-4777-8777-777777777777` | 250 exchanges / 500 messages, deterministic |
+| `repeated.html` | `/chat/88888888-8888-4888-8888-888888888888` | two fully identical exchanges ("Continue" / "Done."), which only live identity can tell apart |
 | `home.html` | `/new` | claude.ai page with no conversation open |
 
 Tests serve these documents at `https://claude.ai/...` by intercepting the

@@ -58,6 +58,7 @@ describe('feature statuses', () => {
 describe('isPanelRequest', () => {
   it('accepts only known request shapes', () => {
     assert.equal(isPanelRequest({ type: 'search', requestId: 1, query: 'x' }), true);
+    assert.equal(isPanelRequest({ type: 'go', requestId: 2, key: 'human:0123456789abcdef:1', revision: 7 }), true);
     assert.equal(isPanelRequest({ type: 'search', requestId: '1' }), false);
     assert.equal(isPanelRequest({ type: 'eval', requestId: 1 }), false);
     assert.equal(isPanelRequest(null), false);

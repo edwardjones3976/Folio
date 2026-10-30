@@ -296,6 +296,101 @@ describe('duplicate messages on partially loaded pages (synthetic, review findin
   });
 });
 
+describe('outline and search clicks follow live identity, not anchors (synthetic, review finding 3)', () => {
+  interface Went {
+    stale: boolean;
+    resolution: Resolution;
+    jumped: boolean;
+  }
+  const highlighted = (selector: string) =>
+    page.evaluate<number[]>(
+      (s: string) => Array.from(document.querySelectorAll(s)).flatMap((el, i) => (el.hasAttribute('data-folio-highlight') ? [i] : [])),
+      selector,
+    );
+  const PROMPTS = '[data-testid="user-message"]';
+  const REPLIES = '[data-is-streaming]';
+
+  it('goes to the second of two fully identical exchanges, which no anchor can tell apart', async () => {
+    await open('repeated');
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.deepEqual(snapshot.messages.map((m) => m.excerpt), ['Continue', 'Done.', 'Continue', 'Done.']);
+    const [, , prompt, reply] = snapshot.messages;
+    const anchored = await call<{ resolution: Resolution }>('locate', await call<MessageAnchor>('anchorFor', prompt!.key));
+    assert.equal(anchored.resolution.status, 'ambiguous', 'as a bookmark it stays ambiguous');
+
+    const went = await call<Went>('go', prompt!.key, snapshot.revision, {});
+    assert.deepEqual([went.stale, went.jumped, went.resolution.status], [false, true, 'exact']);
+    assert.deepEqual(await highlighted(PROMPTS), [1]);
+    const view = await page.evaluate<{ top: number; height: number }>(() => ({
+      top: document.querySelectorAll('[data-testid="user-message"]')[1]!.getBoundingClientRect().top,
+      height: innerHeight,
+    }));
+    assert.ok(view.top > -1 && view.top < view.height, `second prompt scrolled into view (top ${view.top})`);
+    await call('go', reply!.key, snapshot.revision, {});
+    assert.deepEqual(await highlighted(REPLIES), [1]);
+    await call('go', snapshot.messages[0]!.key, snapshot.revision, {});
+    assert.deepEqual(await highlighted(PROMPTS), [0]);
+  });
+
+  it('goes to a single loaded message, which no neighbour can confirm', async () => {
+    await open('repeated');
+    await page.evaluate(() => {
+      for (const turn of Array.from(document.querySelectorAll('[data-test-render-count]')).slice(1)) turn.remove();
+    });
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.messages.length, 1);
+    const anchored = await call<{ resolution: Resolution }>('locate', await call<MessageAnchor>('anchorFor', snapshot.messages[0]!.key));
+    assert.equal(anchored.resolution.status, 'probable', 'as a bookmark it is not confirmed');
+    const went = await call<Went>('go', snapshot.messages[0]!.key, snapshot.revision, {});
+    assert.deepEqual([went.stale, went.jumped], [false, true]);
+    assert.deepEqual(await highlighted(PROMPTS), [0]);
+  });
+
+  it('follows the entry the panel showed when earlier messages load and renumber the keys', async () => {
+    await open('repeated');
+    await page.evaluate(() => {
+      const turns = Array.from(document.querySelectorAll('[data-test-render-count]'));
+      (window as unknown as { __earlier: Element[] }).__earlier = turns.slice(0, 2);
+      for (const turn of turns.slice(0, 2)) turn.remove();
+    });
+    const shownList = await call<Snapshot>('snapshot');
+    const shown = shownList.messages[0]!;
+    assert.equal(shownList.messages.length, 2, 'only the second exchange is loaded');
+    await page.evaluate(() => document.getElementById('conversation')!.prepend(...(window as unknown as { __earlier: Element[] }).__earlier));
+    const now = await call<Snapshot>('snapshot');
+    assert.equal(now.messages.length, 4);
+    assert.equal(now.messages[0]!.key, shown.key, 'the same key now names the first copy');
+
+    const went = await call<Went>('go', shown.key, shownList.revision, {});
+    assert.deepEqual([went.stale, went.jumped], [true, true]);
+    assert.deepEqual(await highlighted(PROMPTS), [1], 'the copy that was clicked, not the one the key names now');
+  });
+
+  it('refuses when the page changed and the entry can no longer be confirmed', async () => {
+    await open('repeated');
+    const snapshot = await call<Snapshot>('snapshot');
+    await page.evaluate(() => {
+      // claude.ai re-renders the second prompt (a new element) and a new prompt arrives.
+      const turns = Array.from(document.querySelectorAll('[data-test-render-count]'));
+      turns[2]!.replaceWith(turns[2]!.cloneNode(true));
+      const turn = turns[3]!.cloneNode(false) as Element;
+      turn.append(Object.assign(document.createElement('div'), { textContent: 'Summarize everything so far.' }));
+      turn.firstElementChild!.setAttribute('data-testid', 'user-message');
+      document.getElementById('conversation')!.append(turn);
+    });
+    const went = await call<Went>('go', snapshot.messages[2]!.key, snapshot.revision, {});
+    assert.deepEqual([went.stale, went.jumped, went.resolution.status], [true, false, 'ambiguous']);
+    assert.deepEqual(await highlighted(PROMPTS), []);
+  });
+
+  it('keeps no earlier generations once the index is cleared', async () => {
+    await open('repeated');
+    const snapshot = await call<Snapshot>('snapshot');
+    await call('clear');
+    assert.equal(await call('go', snapshot.messages[2]!.key, snapshot.revision, {}), null);
+  });
+});
+
 describe('layout drift and unsupported pages (synthetic)', () => {
   it('falls back to CSS class names and reports that as partial', async () => {
     await open('drifted');

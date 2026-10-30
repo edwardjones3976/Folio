@@ -12,6 +12,7 @@ const index = new LiveIndex(claudeAdapter, document, location);
 
 (globalThis as unknown as { __folioHarness: unknown }).__folioHarness = {
   refresh: () => index.refresh(),
+  clear: () => index.clear(),
   snapshot: () => {
     index.refresh();
     return index.snapshot();
@@ -38,6 +39,17 @@ const index = new LiveIndex(claudeAdapter, document, location);
     index.refresh();
     const located = index.locate(anchor);
     return located.message ? jumpTo(document, located.message, options) : null;
+  },
+  /** Direct navigation as the content script does it for outline and search clicks ('go'). */
+  go: (key: string, revision: number, options: JumpOptions = {}) => {
+    let target = index.target(key, revision);
+    if (!target?.message) {
+      index.refresh();
+      target = index.target(key, revision);
+    }
+    if (!target) return null;
+    if (target.message) jumpTo(document, target.message, options);
+    return { stale: target.stale, resolution: target.resolution, jumped: target.message !== null };
   },
   search: (query: string) => {
     index.refresh();

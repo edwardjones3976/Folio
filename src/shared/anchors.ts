@@ -2,15 +2,20 @@
 //
 // Like a W3C Web Annotation TextQuoteSelector (exact text plus the text before
 // and after it), an anchor is the message's content digest plus the identity of
-// the messages around it. Resolution follows the same order as fuzzy
-// re-anchoring: exact text confirmed by context first, then a long matching
-// opening ("changed"), otherwise it reports failure. Position is never used.
-// - "exact" needs identical text AND a confirming neighbour. A different
-//   previous message rules a candidate out: in claude.ai the messages before a
-//   message never change without it becoming a different message.
-// - Identical messages that context cannot tell apart are "ambiguous".
-// - "changed" needs at least MIN_PREFIX_MATCH identical opening characters, so
-//   short messages only ever match exactly.
+// the messages around it. When both sides are known, both must agree. Position
+// is never used.
+// - A side (the previous or the next message) that both the anchor and the
+//   candidate name, and that differs, rules the candidate out.
+// - "exact" needs identical text, exactly one candidate left, and both sides
+//   matching. One side may be unknown only when nothing was known on that side
+//   when the anchor was made AND no other message had the same text then
+//   (`copies` is 1). A side that is unknown because the page has not loaded it
+//   never counts as confirmation.
+// - A single remaining candidate without that confirmation is "probable": it is
+//   reported, never jumped to. Several are "ambiguous".
+// - "changed" (a message whose text differs) needs at least MIN_PREFIX_MATCH
+//   identical opening characters plus the same neighbour confirmation, so short
+//   messages, and anchors saved without context, never match as changed.
 import type { MessageAnchor, Resolution, Role } from './types.ts';
 
 export interface AnchorCandidate {
@@ -31,13 +36,19 @@ export function messageId(role: Role, digest: string): string {
   return `${role}:${digest}`;
 }
 
-type Evidence = 'match' | 'mismatch' | 'unknown';
+/**
+ * One side of a candidate compared with the anchor:
+ * - 'match' / 'conflict': both name a message there, the same one or not;
+ * - 'unsaved': nothing was known on that side when the anchor was made;
+ * - 'unloaded': the anchor names a message there, but none is known there now.
+ */
+type Side = 'match' | 'conflict' | 'unsaved' | 'unloaded';
 
 interface Scored {
   index: number;
   candidate: AnchorCandidate;
-  before: Evidence;
-  after: Evidence;
+  before: Side;
+  after: Side;
 }
 
 const NOT_LOADED: Resolution = {
@@ -46,9 +57,21 @@ const NOT_LOADED: Resolution = {
   note: 'The message was seen earlier but is not loaded in the page now. Scroll the chat to load it, then try again.',
 };
 
-function compare(saved: string | null | undefined, now: string | null): Evidence {
-  if (!saved || !now) return 'unknown';
-  return saved === now ? 'match' : 'mismatch';
+const NOT_FOUND: Resolution = {
+  status: 'unresolved',
+  reason: 'not-found',
+  note: 'No loaded message matches. It may be on another branch, not loaded yet, edited, or deleted.',
+};
+
+const LEGACY: Resolution = {
+  status: 'ambiguous',
+  note: 'This bookmark was saved by an earlier Folio version without the surrounding messages needed to confirm it. Bookmark the message again.',
+};
+
+function compare(saved: string | null | undefined, now: string | null): Side {
+  if (!saved) return 'unsaved';
+  if (!now) return 'unloaded';
+  return saved === now ? 'match' : 'conflict';
 }
 
 function sharedPrefixLength(a: string, b: string): number {
@@ -71,78 +94,78 @@ function score(anchor: MessageAnchor, candidates: readonly AnchorCandidate[], ke
   );
 }
 
-/**
- * Candidates whose neighbours confirm them. When several do, those whose next
- * message differs are set aside only if that leaves exactly one; a neighbour
- * that is merely unknown never decides.
- */
-function confirmedOf(scored: readonly Scored[]): Scored[] {
-  const confirmed = scored.filter((s) => s.before === 'match' || (s.before === 'unknown' && s.after === 'match'));
-  if (confirmed.length <= 1) return confirmed;
-  const consistent = confirmed.filter((s) => s.after !== 'mismatch');
-  return consistent.length === 1 ? consistent : confirmed;
+const conflicts = (s: Scored) => s.before === 'conflict' || s.after === 'conflict';
+
+/** True when the neighbours identify the only remaining candidate (rules at the top of this file). */
+function confirmed(s: Scored, copies: number | undefined): boolean {
+  if (s.before === 'match' && s.after === 'match') return true;
+  const oneSideNeverKnown = (s.before === 'match' && s.after === 'unsaved') || (s.before === 'unsaved' && s.after === 'match');
+  return oneSideNeverKnown && copies === 1;
+}
+
+/** Why the only remaining candidate is not confirmed, in the user's terms. */
+function unconfirmedReason(s: Scored, copies: number | undefined): string {
+  const unloaded = [s.before === 'unloaded' ? 'before' : '', s.after === 'unloaded' ? 'after' : ''].filter(Boolean);
+  if (unloaded.length > 0) {
+    return `the message ${unloaded.join(' and ')} it is not loaded, so Folio cannot compare it with the saved one. Scroll the chat to load the messages around it, then try again`;
+  }
+  if (s.before !== 'match' && s.after !== 'match') return 'no message next to it was known when this was saved, so nothing can confirm it';
+  const side = s.before === 'match' ? 'before' : 'after';
+  return copies === undefined
+    ? `only the message ${side} it can be compared, and this bookmark does not record whether other messages had the same text`
+    : `${copies} messages had this text when it was saved and only the message ${side} it can be compared, so Folio cannot tell which one it is`;
 }
 
 function resolveIdentical(anchor: MessageAnchor, same: readonly Scored[]): Resolution {
-  if (!anchor.context) {
-    return {
-      status: 'ambiguous',
-      note: 'This bookmark was saved by an earlier Folio version without the surrounding messages needed to confirm it. Bookmark the message again.',
-    };
-  }
-  const confirmed = confirmedOf(same);
-  if (confirmed.length === 1) {
-    const { index, candidate } = confirmed[0]!;
-    if (!candidate.rendered) return NOT_LOADED;
-    return same.length > 1
-      ? { status: 'exact', index, note: `${same.length} messages have identical text; matched by the messages around it.` }
-      : { status: 'exact', index };
-  }
-  if (confirmed.length > 1) {
-    if (confirmed.every((s) => !s.candidate.rendered)) return NOT_LOADED;
-    return {
-      status: 'ambiguous',
-      note: `${confirmed.length} messages have identical text and identical neighbouring messages; Folio will not guess which one was saved.`,
-    };
-  }
-  if (same.every((s) => s.before === 'mismatch')) {
+  const viable = same.filter((s) => !conflicts(s));
+  if (viable.length === 0) {
     return {
       status: 'unresolved',
       reason: 'not-found',
-      note: 'A message with the same text is in the page, but the message before it differs, so it is a different message. The saved one may be on another branch or not loaded.',
+      note: same.every((s) => s.before === 'conflict')
+        ? 'A message with the same text is in the page, but the message before it differs, so it is a different message. The saved one may be on another branch or not loaded.'
+        : 'A message with the same text is in the page, but the message after it differs from when this was saved. It may be another copy of the same text, or the conversation after it was edited or regenerated; Folio will not guess.',
     };
   }
-  return {
-    status: 'ambiguous',
-    note: 'A message with the same text is in the page, but the messages around it are not loaded or have changed, so Folio cannot confirm it is the saved one. Scroll the chat to load the surrounding messages, then try again.',
-  };
+  if (viable.length > 1) {
+    if (viable.every((s) => !s.candidate.rendered)) return NOT_LOADED;
+    return {
+      status: 'ambiguous',
+      note: `${viable.length} messages have identical text, and the messages around them do not tell them apart; Folio will not guess which one was saved.`,
+    };
+  }
+  const only = viable[0]!;
+  if (!confirmed(only, anchor.copies)) {
+    return { status: 'probable', index: only.index, note: `One message has the saved text, but ${unconfirmedReason(only, anchor.copies)}.` };
+  }
+  if (!only.candidate.rendered) return NOT_LOADED;
+  return same.length > 1
+    ? { status: 'exact', index: only.index, note: `${same.length} messages have identical text; matched by the messages around it.` }
+    : { status: 'exact', index: only.index };
 }
 
 function resolveChanged(anchor: MessageAnchor, candidates: readonly AnchorCandidate[]): Resolution {
-  const notFound: Resolution = {
-    status: 'unresolved',
-    reason: 'not-found',
-    note: 'No loaded message matches. It may be on another branch, not loaded yet, edited, or deleted.',
+  if (anchor.prefix.length < MIN_PREFIX_MATCH) return NOT_FOUND;
+  const viable = score(anchor, candidates, (c) => c.role === anchor.role && similarOpening(anchor.prefix, c.text)).filter((s) => !conflicts(s));
+  if (viable.length === 0) return NOT_FOUND;
+  if (viable.length > 1) {
+    if (viable.every((s) => !s.candidate.rendered)) return NOT_LOADED;
+    return { status: 'ambiguous', note: `${viable.length} messages start the same way and none matches exactly; Folio will not guess.` };
+  }
+  const only = viable[0]!;
+  if (!confirmed(only, anchor.copies)) {
+    return {
+      status: 'probable',
+      index: only.index,
+      note: `One message starts the same way but its text differs, and ${unconfirmedReason(only, anchor.copies)}.`,
+    };
+  }
+  if (!only.candidate.rendered) return NOT_LOADED;
+  return {
+    status: 'changed',
+    index: only.index,
+    note: 'The message text differs from when it was saved (edited, regenerated or still streaming); matched by its opening text and the messages around it.',
   };
-  if (anchor.prefix.length < MIN_PREFIX_MATCH) return notFound;
-  const similar = score(anchor, candidates, (c) => c.role === anchor.role && c.rendered && similarOpening(anchor.prefix, c.text)).filter(
-    (s) => s.before !== 'mismatch',
-  );
-  const chosen = similar.length > 1 ? confirmedOf(similar) : similar;
-  if (chosen.length === 1) {
-    return {
-      status: 'changed',
-      index: chosen[0]!.index,
-      note: 'The message text differs from when it was saved (edited, regenerated or still streaming); matched by its opening text.',
-    };
-  }
-  if (similar.length > 1) {
-    return {
-      status: 'ambiguous',
-      note: `${similar.length} messages start the same way and none matches exactly; Folio will not guess.`,
-    };
-  }
-  return notFound;
 }
 
 export function resolveAnchor(anchor: MessageAnchor, conversationId: string | null, candidates: readonly AnchorCandidate[]): Resolution {
@@ -150,5 +173,10 @@ export function resolveAnchor(anchor: MessageAnchor, conversationId: string | nu
     return { status: 'unresolved', reason: 'other-conversation', note: 'This bookmark belongs to a different claude.ai conversation.' };
   }
   const same = score(anchor, candidates, (c) => c.role === anchor.role && c.digest === anchor.digest);
+  if (!anchor.context) {
+    // Without context nothing can confirm a match, whether the text is identical or changed.
+    const similar = anchor.prefix.length >= MIN_PREFIX_MATCH && candidates.some((c) => c.role === anchor.role && similarOpening(anchor.prefix, c.text));
+    return same.length > 0 || similar ? LEGACY : NOT_FOUND;
+  }
   return same.length > 0 ? resolveIdentical(anchor, same) : resolveChanged(anchor, candidates);
 }

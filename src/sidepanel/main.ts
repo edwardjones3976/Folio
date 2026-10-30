@@ -121,9 +121,10 @@ function describeJump(result: JumpResult, description: string): string {
   return `Could not jump to ${description}. ${result.note}`;
 }
 
-async function jumpToAnchor(anchor: MessageAnchor, description: string, highlightTerm?: string): Promise<JumpResult | null> {
+/** Stored bookmarks: resolved by their anchor in the content script. */
+async function jumpToAnchor(anchor: MessageAnchor, description: string): Promise<JumpResult | null> {
   try {
-    const reply = await connection.request({ type: 'jump', anchor, ...(highlightTerm ? { highlightTerm } : {}) });
+    const reply = await connection.request({ type: 'jump', anchor });
     if (reply.type !== 'jump') return null;
     report(describeJump(reply.result, description));
     return reply.result;
@@ -133,19 +134,21 @@ async function jumpToAnchor(anchor: MessageAnchor, description: string, highligh
   }
 }
 
-async function anchorFor(message: MessageSummary, headingIndex?: number): Promise<MessageAnchor | null> {
-  const reply = await connection.request({ type: 'anchor-for', key: message.key, ...(headingIndex === undefined ? {} : { headingIndex }) });
-  return reply.type === 'anchor-for' ? reply.anchor : null;
-}
-
-async function jumpToMessage(message: MessageSummary, description: string, headingIndex?: number, highlightTerm?: string): Promise<void> {
+/**
+ * Outline entries and search results: follows the entry `key` of index
+ * generation `revision` (the snapshot or search it was shown from) by live
+ * identity. Persistent anchors are only for stored bookmarks.
+ */
+async function goTo(key: string, revision: number, description: string, headingIndex?: number, highlightTerm?: string): Promise<void> {
   try {
-    const anchor = await anchorFor(message, headingIndex);
-    if (!anchor) {
-      report(`Could not jump to ${description}. The page changed and Folio no longer has this message; the outline will refresh.`);
-      return;
-    }
-    await jumpToAnchor(anchor, description, highlightTerm);
+    const reply = await connection.request({
+      type: 'go',
+      key,
+      revision,
+      ...(headingIndex === undefined ? {} : { headingIndex }),
+      ...(highlightTerm ? { highlightTerm } : {}),
+    });
+    if (reply.type === 'jump') report(describeJump(reply.result, description));
   } catch (error) {
     report(`Could not jump to ${description}. ${(error as Error).message}`);
   }
@@ -154,22 +157,28 @@ async function jumpToMessage(message: MessageSummary, description: string, headi
 // --- Outline -------------------------------------------------------------------
 
 function renderOutlineView(): void {
-  renderOutline(byId('outline-list'), byId('outline-summary'), readySnapshot(), settings.showHeadings, {
-    jump: (message, description, headingIndex) => void jumpToMessage(message, description, headingIndex),
-    bookmark: (exchange, message) => void bookmarkMessage(exchange, message),
+  // Entries are drawn from snapshot `s`; clicks name their message within that generation.
+  const s = readySnapshot();
+  renderOutline(byId('outline-list'), byId('outline-summary'), s, settings.showHeadings, {
+    jump: (message, description, headingIndex) => {
+      if (s) void goTo(message.key, s.revision, description, headingIndex);
+    },
+    bookmark: (exchange, message) => {
+      if (s) void bookmarkMessage(s, exchange, message);
+    },
   });
 }
 
-async function bookmarkMessage(exchange: Exchange, message: MessageSummary): Promise<void> {
-  const s = readySnapshot();
-  if (!s?.conversation) {
+async function bookmarkMessage(s: Snapshot, exchange: Exchange, message: MessageSummary): Promise<void> {
+  if (!s.conversation) {
     report('Cannot bookmark: no claude.ai conversation is connected.');
     return;
   }
   try {
-    const anchor = await anchorFor(message);
+    const reply = await connection.request({ type: 'anchor-for', key: message.key, revision: s.revision });
+    const anchor = reply.type === 'anchor-for' ? reply.anchor : null;
     if (!anchor) {
-      report('Cannot bookmark: the page changed and this message is no longer indexed.');
+      report('Cannot bookmark: the page changed after the outline was shown. Try again from the updated outline.');
       return;
     }
     await addBookmark(
@@ -199,12 +208,9 @@ async function runSearch(query: string): Promise<void> {
   try {
     const reply = await connection.request({ type: 'search', query });
     if (reply.type !== 'search') return;
+    const { revision } = reply;
     renderSearchResults(byId('search-results'), summary, byId('search-coverage'), reply.result, reply.coverage, (hit) => {
-      const s = readySnapshot();
-      const message = s?.messages.find((m) => m.key === hit.key);
-      const description = `the match in exchange ${hit.exchange}`;
-      if (!message) report(`Could not jump to ${description}. The page changed; search again.`);
-      else void jumpToMessage(message, description, undefined, hit.firstTerm);
+      void goTo(hit.key, revision, `the match in exchange ${hit.exchange}`, undefined, hit.firstTerm);
     });
     announce(summary.textContent ?? '');
   } catch (error) {
@@ -237,7 +243,8 @@ function renderBookmarksView(): void {
       },
       remove: (bookmark) => {
         deleteBookmark(area, bookmark.id).then(
-          () => report(`Deleted bookmark "${bookmark.title}".`),
+          (deleted) =>
+            report(deleted ? `Deleted bookmark "${bookmark.title}".` : `Bookmark "${bookmark.title}" was not found; it may already have been deleted.`),
           (error: unknown) => report(`Could not delete the bookmark. ${String(error)}`),
         );
       },
@@ -321,9 +328,11 @@ function recordJumpCheck(bookmark: Bookmark, result: JumpResult): void {
       ? { status: 'exact', index: 0 }
       : result.status === 'jumped-changed'
         ? { status: 'changed', index: 0, note: result.note }
-        : result.status === 'ambiguous'
-          ? { status: 'ambiguous', note: result.note }
-          : { status: 'unresolved', reason: 'not-found', note: result.note };
+        : result.status === 'probable'
+          ? { status: 'probable', index: 0, note: result.note }
+          : result.status === 'ambiguous'
+            ? { status: 'ambiguous', note: result.note }
+            : { status: 'unresolved', reason: 'not-found', note: result.note };
   checks.set(bookmark.id, check);
   renderBookmarksView();
 }

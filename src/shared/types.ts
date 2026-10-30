@@ -126,23 +126,31 @@ export interface MessageAnchor {
   prefix: string;
   /** Missing on anchors saved by Folio 0.1.0 before context was recorded. */
   context?: AnchorContext;
+  /**
+   * Known messages (loaded or seen earlier) with the same role and text when the
+   * anchor was made, itself included. Missing on anchors saved before it was
+   * recorded; then an unknown neighbour never counts as confirmation.
+   */
+  copies?: number;
   headingIndex?: number;
   headingText?: string;
 }
 
 /**
- * 'exact' and 'changed' identify one message. 'ambiguous': messages with the
- * saved text are loaded, but Folio cannot tell which one was saved. Jumps never
- * navigate on 'ambiguous' or 'unresolved'.
+ * 'exact' and 'changed' identify one message. 'probable': one message fits but
+ * its neighbours cannot confirm it. 'ambiguous': several messages fit, and Folio
+ * cannot tell which one was saved. Jumps to anchors navigate only on 'exact'
+ * and 'changed'.
  */
 export type Resolution =
   | { status: 'exact'; index: number; note?: string }
   | { status: 'changed'; index: number; note: string }
+  | { status: 'probable'; index: number; note: string }
   | { status: 'ambiguous'; note: string }
   | { status: 'unresolved'; reason: 'not-loaded' | 'not-found' | 'other-conversation'; note: string };
 
 export interface JumpResult {
-  status: 'jumped' | 'jumped-changed' | 'ambiguous' | 'unresolved';
+  status: 'jumped' | 'jumped-changed' | 'probable' | 'ambiguous' | 'unresolved';
   note: string;
   /** Present when the target heading could not be matched and the message itself was used. */
   headingFallback?: boolean;

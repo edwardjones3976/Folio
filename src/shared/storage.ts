@@ -126,6 +126,8 @@ function parseAnchor(raw: unknown): MessageAnchor | null {
     const after = parseNeighbour(raw.context.after);
     if (before !== undefined && after !== undefined) anchor.context = { before, after };
   }
+  // Likewise a malformed count: without it an unknown neighbour never confirms a match.
+  if (Number.isInteger(raw.copies) && (raw.copies as number) >= 1) anchor.copies = raw.copies as number;
   if (Number.isInteger(raw.headingIndex) && typeof raw.headingText === 'string') {
     anchor.headingIndex = raw.headingIndex as number;
     anchor.headingText = raw.headingText.slice(0, 300);
@@ -159,7 +161,11 @@ function parseBookmark(raw: unknown): Bookmark | null {
 
 export interface ParsedBookmarks {
   items: Bookmark[];
-  /** Records that failed validation. They are ignored, and kept in storage untouched until an erase. */
+  /**
+   * Records that failed validation (including later duplicates of a bookmark's
+   * id). They are ignored, and kept in storage untouched until an erase, or
+   * until the bookmark whose id they carry is deleted.
+   */
   invalid: number;
 }
 
@@ -194,8 +200,9 @@ export async function loadBookmarks(area: StorageAreaLike): Promise<ParsedBookma
 /**
  * Reads the stored entries, lets `change` edit the valid ones, and writes them
  * back. Records that failed validation keep their place and content, and other
- * fields of the stored value are kept, so ordinary edits never delete data; only
- * an erase does. An unreadable stored value is never overwritten.
+ * fields of the stored value are kept, so adding and editing never delete data;
+ * deleting a bookmark removes only records carrying its id, and an erase removes
+ * everything. An unreadable stored value is never overwritten.
  */
 async function modifyBookmarks<R>(area: StorageAreaLike, change: (slots: Slot[]) => { slots: Slot[] | null; result: R }): Promise<R> {
   const raw = (await area.get(BOOKMARKS_KEY))[BOOKMARKS_KEY];
@@ -262,11 +269,22 @@ export async function updateBookmark(
   });
 }
 
+/** True for any stored record carrying `id`: the bookmark itself, or an ignored record (such as a duplicate) with that id. */
+function carriesId(slot: Slot, id: string): boolean {
+  return 'bookmark' in slot ? slot.bookmark.id === id : isRecord(slot.raw) && slot.raw.id === id;
+}
+
+/**
+ * Deletes the bookmark `id` together with every ignored record carrying the same
+ * id, so a duplicate can never take its place on the next read. Returns false,
+ * changing nothing, when no valid bookmark has that id.
+ */
 export async function deleteBookmark(area: StorageAreaLike, id: string): Promise<boolean> {
-  return modifyBookmarks(area, (slots) => {
-    const remaining = slots.filter((slot) => !isBookmarkSlot(slot, id));
-    return remaining.length === slots.length ? { slots: null, result: false } : { slots: remaining, result: true };
-  });
+  return modifyBookmarks(area, (slots) =>
+    slots.some((slot) => isBookmarkSlot(slot, id))
+      ? { slots: slots.filter((slot) => !carriesId(slot, id)), result: true }
+      : { slots: null, result: false },
+  );
 }
 
 /** Erases all bookmarks, including records that failed validation. */

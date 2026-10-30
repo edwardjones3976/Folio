@@ -12,16 +12,26 @@ export const PING = 'folio:ping';
  */
 export const ERASE_INDEX = 'folio:erase-index';
 
+/**
+ * - 'jump': a stored bookmark, resolved by its anchor.
+ * - 'go': an outline entry or search result, named by its key in the index
+ *   generation (`revision`) the panel showed; followed by live identity. Answered
+ *   with a 'jump' reply.
+ * - 'anchor-for': the anchor to save for a new bookmark; null unless `revision`
+ *   is still the current generation.
+ */
 export type PanelRequest =
   | { type: 'jump'; requestId: number; anchor: MessageAnchor; highlightTerm?: string }
+  | { type: 'go'; requestId: number; key: string; revision: number; headingIndex?: number; highlightTerm?: string }
   | { type: 'search'; requestId: number; query: string }
-  | { type: 'anchor-for'; requestId: number; key: string; headingIndex?: number }
+  | { type: 'anchor-for'; requestId: number; key: string; revision: number; headingIndex?: number }
   | { type: 'resolve'; requestId: number; anchors: MessageAnchor[] }
   | { type: 'reindex'; requestId: number };
 
 export type ContentReply =
   | { type: 'jump'; requestId: number; result: JumpResult }
-  | { type: 'search'; requestId: number; result: SearchResult; coverage: string }
+  /** `revision`: the index generation the result keys belong to. */
+  | { type: 'search'; requestId: number; result: SearchResult; coverage: string; revision: number }
   | { type: 'anchor-for'; requestId: number; anchor: MessageAnchor | null }
   | { type: 'resolve'; requestId: number; results: Resolution[] }
   | { type: 'reindex'; requestId: number }
@@ -36,7 +46,7 @@ export interface PingReply {
   state: Snapshot['state'] | 'starting';
 }
 
-const REQUEST_TYPES = new Set(['jump', 'search', 'anchor-for', 'resolve', 'reindex']);
+const REQUEST_TYPES = new Set(['jump', 'go', 'search', 'anchor-for', 'resolve', 'reindex']);
 
 /** Structural check on messages arriving at the content script. */
 export function isPanelRequest(value: unknown): value is PanelRequest {

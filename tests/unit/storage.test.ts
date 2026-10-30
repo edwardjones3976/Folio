@@ -103,6 +103,18 @@ describe('bookmarks', () => {
     assert.deepEqual(parseBookmarks('garbage'), { items: [], invalid: 1 });
   });
 
+  it('keeps a valid copies count and drops a malformed one', async () => {
+    const area = new MemoryStorage();
+    const counted = newBookmark();
+    counted.anchor = { ...counted.anchor, copies: 2 };
+    assert.equal((await addBookmark(area, counted, NOW, 'ok')).anchor.copies, 2);
+    for (const copies of [0, -1, 1.5, '1', null]) {
+      const tampered = newBookmark();
+      tampered.anchor = { ...tampered.anchor, copies: copies as number };
+      assert.equal((await addBookmark(area, tampered, NOW, `bad-${String(copies)}`)).anchor.copies, undefined, String(copies));
+    }
+  });
+
   it('keeps a valid anchor context and drops a malformed one', async () => {
     const area = new MemoryStorage();
     const before = `human:${digest('prompt')}`;
@@ -165,6 +177,35 @@ describe('records that failed validation are never dropped by ordinary writes (r
     assert.deepEqual(stored(area).items, [INVALID]);
     assert.equal(await deleteBookmark(area, 'broken'), false, 'an invalid record is not deleted by id');
     assert.deepEqual(stored(area).items, [INVALID]);
+  });
+
+  it('delete removes ignored duplicates of the deleted id, so none takes its place (review finding 2, correction 2)', async () => {
+    const area = await storeWithInvalid();
+    const store = stored(area);
+    const original = store.items[1]!;
+    store.items.push(structuredClone(original), { ...structuredClone(original), title: 42 }, { ...structuredClone(original), id: 'other' });
+    const before = await loadBookmarks(area);
+    assert.deepEqual([before.items.map((b) => b.id), before.invalid], [['good-1', 'other'], 3], 'one valid good-1, one valid other; INVALID and two good-1 duplicates ignored');
+
+    assert.equal(await deleteBookmark(area, 'good-1'), true);
+    const after = await loadBookmarks(area);
+    assert.deepEqual(after.items.map((b) => b.id), ['other'], 'the deleted id is not resurrected');
+    assert.equal(after.invalid, 1, 'only the unrelated invalid record remains ignored');
+    assert.deepEqual(stored(area).items.map((b) => b.id), ['broken', 'other']);
+    assert.deepEqual(stored(area).items[0], INVALID, 'records with other ids are kept unchanged');
+    assert.equal(stored(area).exportedBy, 'another tool');
+    assert.equal(await deleteBookmark(area, 'good-1'), false);
+  });
+
+  it('delete with one valid record plus one ignored duplicate leaves neither', async () => {
+    const area = new MemoryStorage();
+    await addBookmark(area, newBookmark(), NOW, 'dup');
+    const store = stored(area);
+    store.items.push(structuredClone(store.items[0]!));
+    assert.deepEqual(await loadBookmarks(area).then((p) => [p.items.length, p.invalid]), [1, 1]);
+    assert.equal(await deleteBookmark(area, 'dup'), true);
+    assert.deepEqual(await loadBookmarks(area).then((p) => [p.items.length, p.invalid]), [0, 0]);
+    assert.deepEqual(stored(area).items, []);
   });
 
   it('refuses to overwrite a stored value that is unreadable as a whole', async () => {

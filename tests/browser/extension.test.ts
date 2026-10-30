@@ -6,6 +6,7 @@ import { after, before, describe, it } from 'node:test';
 import { fixtureHtmlForPath, fixtureId, fixtureUrl } from '../../fixtures/claude/index.ts';
 import type { FixtureName } from '../../fixtures/claude/index.ts';
 import { NEEDLE_EXCHANGE, NEEDLE_PHRASE } from '../../fixtures/claude/long.ts';
+import type { JumpResult, Snapshot } from '../../src/shared/types.ts';
 import { build } from '../../src/tools/build.mjs';
 import { Browser, sleep } from './cdp.ts';
 import type { Page, Session } from './cdp.ts';
@@ -23,6 +24,7 @@ const TITLES: Partial<Record<FixtureName, string>> = {
   partial: 'Synthetic fixture: Sourdough timing',
   long: 'Synthetic fixture: Long project log',
   edge: 'Synthetic fixture: Edge cases',
+  repeated: 'Synthetic fixture: Repeated exchanges',
 };
 
 async function recordNetwork(session: Session): Promise<void> {
@@ -378,6 +380,108 @@ describe('untrusted content (synthetic)', () => {
     assert.equal(await panel.evaluate(() => document.querySelectorAll('#search-results img, #outline-list img, script:not([src])').length), 0);
     assert.equal(await panel.evaluate(() => (window as unknown as { __folioPwned?: number }).__folioPwned ?? null), null);
     assert.equal(await page.evaluate(() => (window as unknown as { __folioPwned?: number }).__folioPwned ?? null), null);
+  });
+});
+
+describe('outline clicks follow live identity (synthetic, review finding 3)', () => {
+  const highlightedPrompts = () =>
+    page.evaluate<number[]>(() =>
+      Array.from(document.querySelectorAll('[data-testid="user-message"]')).flatMap((el, i) => (el.hasAttribute('data-folio-highlight') ? [i] : [])),
+    );
+  const clearPageHighlights = () =>
+    page.evaluate(() => {
+      for (const el of Array.from(document.querySelectorAll('[data-folio-highlight]'))) el.removeAttribute('data-folio-highlight');
+    });
+  const outlineSummary = (expected: string) => waitPanel((s: string) => document.getElementById('outline-summary')!.textContent === s, [expected], expected);
+
+  /** Talks to the content script over its own panel port, bypassing the panel UI: the snapshot it pushes first, and the reply to `body`. */
+  const askContent = <T>(body: Record<string, unknown> | null) =>
+    panel.evaluate<{ snapshot: Snapshot; reply: T | null }>(
+      (id: number, b: Record<string, unknown> | null) =>
+        new Promise((resolve, reject) => {
+          const port = chrome.tabs.connect(id, { name: 'folio-panel' });
+          let snapshot: unknown = null;
+          const timer = setTimeout(() => reject(new Error('no reply from the content script')), 5000);
+          const finish = (reply: unknown) => {
+            clearTimeout(timer);
+            port.disconnect();
+            resolve({ snapshot, reply });
+          };
+          port.onMessage.addListener((message: { type: string; snapshot?: unknown }) => {
+            if (message.type !== 'snapshot') finish(message);
+            else if ((snapshot ??= message.snapshot) && !b) finish(null);
+          });
+          if (b) port.postMessage({ ...b, requestId: 1 });
+        }),
+      tabId,
+      body,
+    );
+
+  it('clicking the second of two fully identical exchanges jumps to the second', async () => {
+    await showFixture('repeated');
+    await selectTab('outline');
+    await outlineSummary('2 exchanges, 4 messages, 0 reply headings.');
+    await click('#outline-list .exchange:nth-child(2) .exchange-jump');
+    await waitPage(
+      () => {
+        const prompts = document.querySelectorAll('[data-testid="user-message"]');
+        return prompts[1]!.getAttribute('data-folio-highlight') === 'message' && !prompts[0]!.hasAttribute('data-folio-highlight');
+      },
+      [],
+      'second prompt highlighted',
+    );
+    await waitPanel(() => document.getElementById('action-status')!.textContent === 'Jumped to exchange 2.', [], 'jump report');
+    await click('#outline-list .exchange:nth-child(1) .exchange-jump');
+    await waitPage(() => document.querySelectorAll('[data-testid="user-message"]')[0]!.getAttribute('data-folio-highlight') === 'message', [], 'first prompt');
+    assert.deepEqual(await highlightedPrompts(), [0]);
+  });
+
+  it('a click on an entry drawn before the page changed is followed to the same message, and says so', async () => {
+    const { snapshot } = await askContent(null);
+    const second = snapshot.messages[2]!;
+    await page.evaluate(() => {
+      const turn = document.createElement('div');
+      turn.setAttribute('data-test-render-count', '1');
+      const prompt = document.createElement('div');
+      prompt.setAttribute('data-testid', 'user-message');
+      prompt.textContent = 'Summarize everything so far.';
+      turn.append(prompt);
+      document.getElementById('conversation')!.append(turn);
+    });
+    await outlineSummary('3 exchanges, 5 messages, 0 reply headings.');
+    await clearPageHighlights();
+    const went = await askContent<{ result: JumpResult }>({ type: 'go', key: second.key, revision: snapshot.revision });
+    assert.deepEqual(went.reply?.result, { status: 'jumped', note: 'The page changed after this list was shown; Folio found the same message again.' });
+    assert.deepEqual(await highlightedPrompts(), [1]);
+    const expired = await askContent<{ result: JumpResult }>({ type: 'go', key: second.key, revision: -2 });
+    assert.equal(expired.reply?.result.status, 'unresolved');
+    assert.match(expired.reply!.result.note, /^The page changed after this list was shown, and Folio no longer has that version of it\./);
+  });
+
+  it('a single loaded message is navigable from the outline', async () => {
+    await page.evaluate(() => {
+      for (const turn of Array.from(document.querySelectorAll('[data-test-render-count]')).slice(1)) turn.remove();
+    });
+    await outlineSummary('1 exchanges, 1 messages, 0 reply headings.');
+    await clearPageHighlights();
+    await panel.evaluate(() => {
+      document.getElementById('action-status')!.textContent = '';
+    });
+    await click('#outline-list .exchange:nth-child(1) .exchange-jump');
+    await waitPanel(() => document.getElementById('action-status')!.textContent === 'Jumped to exchange 1.', [], 'jump report');
+    assert.deepEqual(await highlightedPrompts(), [0]);
+  });
+
+  it('a bookmark that its neighbours cannot confirm is labelled "Not confirmed", and Open does not jump (review finding 1)', async () => {
+    await click('#outline-list .exchange:nth-child(1) .bookmark-add');
+    await selectTab('bookmarks');
+    const status = await waitPanel<string>(() => document.querySelector('.bookmark [data-status="probable"]')?.textContent, [], 'probable label');
+    assert.match(status, /^Not confirmed: One message has the saved text, but no message next to it was known when this was saved/);
+    await clearPageHighlights();
+    await click('.bookmark:has([data-status="probable"]) [data-action="open"]');
+    await waitPanel(() => document.getElementById('action-status')!.textContent!.startsWith('Could not jump to bookmark "Continue". One message has the saved text'), [], 'probable report');
+    assert.equal(await page.evaluate(() => document.querySelectorAll('[data-folio-highlight]').length), 0);
+    await selectTab('outline');
   });
 });
 
