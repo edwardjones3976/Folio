@@ -2,3 +2,5 @@ evidence/
 *.log
 node_modules/
 folio-status.html
+%SystemDrive%/
+dist/
