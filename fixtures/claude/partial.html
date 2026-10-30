@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="folio-fixture" content="synthetic">
+<title>Synthetic fixture: Sourdough timing - Claude</title>
+<style>
+  body { margin: 0; font: 16px/1.5 sans-serif; }
+  .scroller { height: 100vh; overflow-y: auto; }
+  .turn { max-width: 720px; margin: 0 auto; padding: 16px; }
+  .fixture-banner { background: #fee2e2; padding: 4px 8px; font-size: 12px; }
+</style>
+</head>
+<body>
+<!--
+  SYNTHETIC TEST FIXTURE for Folio. Hand-written; NOT captured from claude.ai; no real user data.
+  Models a conversation whose earlier messages are not loaded yet: it starts with a Claude reply
+  and shows a loading indicator.
+-->
+<div class="fixture-banner" role="note">Synthetic test fixture modelled on claude.ai. Not real claude.ai content.</div>
+<main class="scroller">
+  <div class="conversation" id="conversation">
+    <div id="loading" role="progressbar" aria-busy="true" aria-label="Loading earlier messages"></div>
+    <div data-test-render-count="1" class="turn">
+      <div data-is-streaming="false" class="group">
+        <div class="font-claude-response"><div class="standard-markdown">
+          <p>So the levain should peak about 6 hours after feeding at 24 degrees.</p>
+        </div></div>
+      </div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div class="group"><div data-testid="user-message" class="font-user-message"><p>When do I start the bulk ferment?</p></div></div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div data-is-streaming="false" class="group">
+        <div class="font-claude-response"><div class="standard-markdown">
+          <h2>Bulk ferment</h2>
+          <p>Mix the dough when the levain peaks, then bulk ferment for 4 to 5 hours with stretch and folds.</p>
+        </div></div>
+      </div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div class="group"><div data-testid="user-message" class="font-user-message"><p>And the cold retard?</p></div></div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div data-is-streaming="false" class="group">
+        <div class="font-claude-response"><div class="standard-markdown">
+          <p>Shape, then retard overnight in the fridge for 12 to 16 hours. Bake straight from cold.</p>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</main>
+</body>
+</html>

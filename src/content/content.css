@@ -1,0 +1,24 @@
+/* Injected into https://claude.ai/* only. Styles apply solely to elements Folio
+   marked with data-folio-highlight during a jump, and to search-term ranges. */
+[data-folio-highlight="message"] {
+  outline: 3px solid #c2410c !important;
+  outline-offset: 4px !important;
+  border-radius: 6px;
+  scroll-margin-top: 72px;
+}
+
+[data-folio-highlight="heading"] {
+  background: rgba(194, 65, 12, 0.18) !important;
+  scroll-margin-top: 72px;
+}
+
+::highlight(folio-match) {
+  background-color: #fde047;
+  color: #111827;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-folio-highlight="message"] {
+    transition: outline-color 0.3s ease-in-out;
+  }
+}

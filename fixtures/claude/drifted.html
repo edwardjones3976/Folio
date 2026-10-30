@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="folio-fixture" content="synthetic">
+<title>Synthetic fixture: Layout drift - Claude</title>
+<style>
+  body { margin: 0; font: 16px/1.5 sans-serif; }
+  .turn { max-width: 720px; margin: 0 auto; padding: 16px; }
+  .fixture-banner { background: #fee2e2; padding: 4px 8px; font-size: 12px; }
+</style>
+</head>
+<body>
+<!--
+  SYNTHETIC TEST FIXTURE for Folio. Hand-written; NOT captured from claude.ai; no real user data.
+  Models a layout change where the data attributes Folio prefers are gone and only CSS class names
+  remain. Folio must still work but report the less stable fallback.
+-->
+<div class="fixture-banner" role="note">Synthetic test fixture modelled on claude.ai. Not real claude.ai content.</div>
+<main>
+  <div class="turn"><div class="font-user-message"><p>Translate "good morning" into Portuguese.</p></div></div>
+  <div class="turn"><div class="font-claude-response"><p>"Bom dia."</p></div></div>
+  <div class="turn"><div class="font-user-message"><p>And "good night"?</p></div></div>
+  <div class="turn"><div class="font-claude-response"><p>"Boa noite."</p></div></div>
+</main>
+</body>
+</html>

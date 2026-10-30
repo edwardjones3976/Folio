@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" data-theme="system" data-text-size="normal">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Folio</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <script src="sidepanel.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <h1 class="app-title">Folio <span class="provider">for claude.ai</span></h1>
+    <p id="conversation-title" class="conversation-title"></p>
+  </header>
+
+  <section id="status" class="status" aria-labelledby="status-heading" data-state="connecting">
+    <h2 id="status-heading" class="visually-hidden">Page status</h2>
+    <p id="status-text" class="status-text">Connecting to the current tab…</p>
+    <p id="action-status" class="action-status"></p>
+    <ul id="feature-chips" class="chips" aria-label="Feature status for this page"></ul>
+    <details id="coverage-details" hidden>
+      <summary>Coverage details</summary>
+      <ul id="coverage-signals" class="signals"></ul>
+      <p id="coverage-strategy" class="help"></p>
+    </details>
+  </section>
+
+  <div role="tablist" aria-label="Folio views" class="tabs" id="tablist">
+    <button type="button" role="tab" id="tab-outline" aria-controls="panel-outline" aria-selected="true">Outline</button>
+    <button type="button" role="tab" id="tab-search" aria-controls="panel-search" aria-selected="false" tabindex="-1">Search</button>
+    <button type="button" role="tab" id="tab-bookmarks" aria-controls="panel-bookmarks" aria-selected="false" tabindex="-1">Bookmarks</button>
+    <button type="button" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">Settings</button>
+  </div>
+
+  <main>
+    <section role="tabpanel" id="panel-outline" aria-labelledby="tab-outline" tabindex="-1">
+      <div class="toolbar">
+        <p id="outline-summary" class="summary"></p>
+        <label class="check"><input type="checkbox" id="show-headings"> Show reply headings</label>
+      </div>
+      <p class="help">Labels are the first line of each prompt (or reply) and headings from Claude's replies, as written. Up/Down arrows move between entries.</p>
+      <ol id="outline-list" class="outline" aria-label="Conversation outline"></ol>
+    </section>
+
+    <section role="tabpanel" id="panel-search" aria-labelledby="tab-search" tabindex="-1" hidden>
+      <form id="search-form" role="search" class="search-form">
+        <label for="search-input">Search loaded messages</label>
+        <div class="row">
+          <input id="search-input" type="search" autocomplete="off" spellcheck="false" maxlength="200" aria-describedby="search-help">
+          <button type="submit" class="primary">Search</button>
+        </div>
+        <p id="search-help" class="help">Every word must appear. Use "double quotes" for an exact phrase. Not case-sensitive.</p>
+      </form>
+      <p id="search-coverage" class="coverage-note"></p>
+      <p id="search-summary" class="summary"></p>
+      <ol id="search-results" class="results" aria-label="Search results"></ol>
+    </section>
+
+    <section role="tabpanel" id="panel-bookmarks" aria-labelledby="tab-bookmarks" tabindex="-1" hidden>
+      <fieldset class="inline">
+        <legend>Show</legend>
+        <label><input type="radio" name="bookmark-scope" value="current" checked> This conversation</label>
+        <label><input type="radio" name="bookmark-scope" value="all"> All conversations</label>
+      </fieldset>
+      <p id="bookmarks-summary" class="summary"></p>
+      <ul id="bookmark-list" class="bookmarks" aria-label="Bookmarks"></ul>
+    </section>
+
+    <section role="tabpanel" id="panel-settings" aria-labelledby="tab-settings" tabindex="-1" hidden>
+      <fieldset>
+        <legend>claude.ai</legend>
+        <label class="check"><input type="checkbox" id="setting-enabled"> Enable Folio on claude.ai</label>
+        <p class="help">When off, Folio reads nothing from claude.ai pages. Saved bookmarks are kept.</p>
+      </fieldset>
+      <fieldset>
+        <legend>Theme</legend>
+        <label><input type="radio" name="theme" value="system"> Match system</label>
+        <label><input type="radio" name="theme" value="light"> Light</label>
+        <label><input type="radio" name="theme" value="dark"> Dark</label>
+        <label><input type="radio" name="theme" value="contrast"> High contrast</label>
+      </fieldset>
+      <fieldset>
+        <legend>Text size</legend>
+        <label><input type="radio" name="text-size" value="normal"> Normal</label>
+        <label><input type="radio" name="text-size" value="large"> Large</label>
+        <label><input type="radio" name="text-size" value="larger"> Larger</label>
+      </fieldset>
+
+      <h2>Stored data</h2>
+      <p class="help">Folio stores only its settings and your bookmarks, in this browser profile (chrome.storage.local). Each bookmark keeps up to 160 characters from the start of the bookmarked message so it can be found again. Conversation text is otherwise kept only in memory while the page is open. Nothing is sent anywhere.</p>
+      <div class="row">
+        <button type="button" id="inspect-refresh">Show stored data</button>
+        <button type="button" id="export-data">Download stored data (JSON)</button>
+      </div>
+      <p id="storage-usage" class="summary"></p>
+      <pre id="storage-view" class="storage-view" tabindex="0" aria-label="Stored data as JSON" hidden></pre>
+      <div class="row danger-zone">
+        <button type="button" id="erase-bookmarks" class="danger">Erase bookmarks…</button>
+        <button type="button" id="erase-all" class="danger">Erase all Folio data…</button>
+      </div>
+      <div id="erase-confirm" class="confirm" role="group" aria-labelledby="erase-question" hidden>
+        <p id="erase-question"></p>
+        <div class="row">
+          <button type="button" id="erase-confirm-yes" class="danger">Erase</button>
+          <button type="button" id="erase-confirm-no">Cancel</button>
+        </div>
+      </div>
+
+      <h2>Feature status</h2>
+      <table class="features">
+        <caption class="visually-hidden">Status of each Folio feature</caption>
+        <thead><tr><th scope="col">Feature</th><th scope="col">Status</th><th scope="col">Details</th></tr></thead>
+        <tbody id="feature-table"></tbody>
+      </table>
+      <p class="help">Statuses: working, partial, blocked, not_implemented. Checked by automated tests against synthetic pages modelled on claude.ai; not verified on live claude.ai.</p>
+    </section>
+  </main>
+
+  <div id="announcer" class="visually-hidden" role="status" aria-live="polite"></div>
+</body>
+</html>

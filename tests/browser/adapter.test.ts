@@ -1,0 +1,329 @@
+// claude.ai adapter and live index, run in real Chrome against the synthetic
+// fixtures (no extension loaded: the code is bundled and injected per page).
+import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { after, before, describe, it } from 'node:test';
+import { FIXTURES, fixtureHtmlForPath, fixtureId, fixtureUrl } from '../../fixtures/claude/index.ts';
+import type { FixtureName } from '../../fixtures/claude/index.ts';
+import { NEEDLE_EXCHANGE, NEEDLE_PHRASE } from '../../fixtures/claude/long.ts';
+import type { SearchResult } from '../../src/shared/search.ts';
+import type { MessageAnchor, Resolution, Snapshot } from '../../src/shared/types.ts';
+import { bundle } from '../../src/tools/bundle.mjs';
+import { Browser } from './cdp.ts';
+import type { Page } from './cdp.ts';
+
+const ROOT = join(import.meta.dirname, '..', '..');
+const HARNESS = bundle(ROOT, join(ROOT, 'tests/browser/harness-entry.ts'));
+
+interface Discovered {
+  role: string;
+  text: string;
+  headings: { level: number; text: string }[];
+  branch: { current: number; total: number } | null;
+  streaming: boolean;
+}
+
+let browser: Browser;
+let page: Page;
+
+async function open(name: FixtureName): Promise<void> {
+  await page.goto(fixtureUrl(name));
+  await page.evaluate(HARNESS);
+}
+
+const call = <T>(method: string, ...args: unknown[]) =>
+  page.evaluate<T>(
+    (m: string, a: unknown[]) => (globalThis as unknown as { __folioHarness: Record<string, (...x: unknown[]) => unknown> }).__folioHarness[m]!(...a),
+    method,
+    args,
+  );
+
+before(async () => {
+  browser = await Browser.launch();
+  page = await browser.newPage();
+  await page.serveFixtures(fixtureHtmlForPath);
+});
+
+after(async () => {
+  await browser?.close();
+});
+
+describe('claude.ai adapter on a fully loaded conversation (synthetic)', () => {
+  it('finds every prompt and reply in order with semantic attributes', async () => {
+    await open('loaded');
+    const messages = await call<Discovered[]>('discover');
+    assert.equal(messages.length, 12);
+    assert.deepEqual(
+      messages.map((m) => m.role),
+      Array.from({ length: 12 }, (_, i) => (i % 2 === 0 ? 'human' : 'assistant')),
+    );
+    assert.equal(messages[0]!.text, 'I want to plan drip irrigation for a 6 by 3 metre vegetable bed.\nWhere should I start?');
+    assert.deepEqual(messages[1]!.headings, [
+      { level: 2, text: 'Water needs' },
+      { level: 3, text: 'Emitter spacing' },
+      { level: 2, text: 'Layout' },
+    ]);
+    assert.match(messages[5]!.text, /Spring\s+20/);
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.state, 'ready');
+    assert.equal(snapshot.strategy.id, 'semantic-attributes');
+    assert.equal(snapshot.coverage.level, 'loaded-only');
+    assert.deepEqual(snapshot.coverage.signals, []);
+    assert.deepEqual(snapshot.conversation, {
+      provider: 'claude.ai',
+      id: fixtureId('loaded'),
+      url: fixtureUrl('loaded'),
+      title: 'Synthetic fixture: Planning drip irrigation',
+    });
+  });
+
+  it('never reads the composer, password fields, buttons, the sidebar or page chrome', async () => {
+    const texts = (await call<Discovered[]>('discover')).map((m) => m.text).join('\n');
+    for (const forbidden of ['DRAFT-COMPOSER-TEXT', 'fixture-password', 'Sourdough timing', 'Synthetic test fixture', 'Copy', 'Retry', 'Send']) {
+      assert.ok(!texts.includes(forbidden), forbidden);
+    }
+  });
+
+  it('resolves anchors by content after reload and after earlier messages are inserted', async () => {
+    const snapshot = await call<Snapshot>('snapshot');
+    const target = snapshot.messages[5]!;
+    const anchor = await call<MessageAnchor>('anchorFor', target.key);
+    await open('loaded');
+    assert.equal((await call<{ resolution: Resolution }>('locate', anchor)).resolution.status, 'exact');
+    await page.evaluate(() => {
+      const turn = document.querySelector('[data-test-render-count]')!;
+      const extra = turn.cloneNode(true) as Element;
+      extra.querySelector('[data-testid="user-message"]')!.textContent = 'A newly loaded earlier prompt';
+      turn.before(extra);
+    });
+    const located = await call<{ resolution: Resolution; text: string }>('locate', anchor);
+    assert.equal(located.resolution.status, 'exact');
+    assert.match(located.text, /^With 40 emitters/);
+  });
+
+  it('jumps to a message and to a heading, scrolling it into view and highlighting it', async () => {
+    await open('loaded');
+    const snapshot = await call<Snapshot>('snapshot');
+    const last = snapshot.messages[11]!;
+    await call('jump', await call<MessageAnchor>('anchorFor', last.key), {});
+    const visible = await page.evaluate<{ attr: string | null; top: number; height: number }>(() => {
+      const el = document.querySelectorAll('[data-is-streaming]')[5]!;
+      return { attr: el.getAttribute('data-folio-highlight'), top: el.getBoundingClientRect().top, height: innerHeight };
+    });
+    assert.equal(visible.attr, 'message');
+    assert.ok(visible.top >= 0 && visible.top < visible.height, `top ${visible.top}`);
+
+    const first = snapshot.messages[1]!;
+    const outcome = await call<{ headingFallback: boolean }>('jump', await call<MessageAnchor>('anchorFor', first.key, 1), {
+      headingIndex: 1,
+      headingText: 'Emitter spacing',
+    });
+    assert.equal(outcome.headingFallback, false);
+    assert.equal(await page.evaluate(() => document.querySelector('h3')!.getAttribute('data-folio-highlight')), 'heading');
+    assert.equal(await page.evaluate(() => document.querySelectorAll('[data-folio-highlight]').length), 2);
+  });
+
+  it('falls back to the message start when a saved heading no longer matches', async () => {
+    const snapshot = await call<Snapshot>('snapshot');
+    const outcome = await call<{ headingFallback: boolean }>('jump', await call<MessageAnchor>('anchorFor', snapshot.messages[1]!.key), {
+      headingIndex: 1,
+      headingText: 'A heading that was renamed',
+    });
+    assert.equal(outcome.headingFallback, true);
+  });
+
+  it('highlights search terms without modifying page markup', async () => {
+    const result = await call<SearchResult>('search', '"backflow preventer"');
+    assert.equal(result.total, 2);
+    assert.deepEqual(result.hits.map((h) => h.exchange), [2, 6]);
+    const before = await page.evaluate(() => document.querySelector('main')!.innerHTML.replace(/ data-folio-highlight="[a-z]+"/g, '').length);
+    const snapshot = await call<Snapshot>('snapshot');
+    const outcome = await call<{ termFound: boolean }>('jump', await call<MessageAnchor>('anchorFor', snapshot.messages[3]!.key), {
+      highlightTerm: 'backflow preventer',
+    });
+    assert.equal(outcome.termFound, true);
+    assert.equal(await page.evaluate(() => CSS.highlights.has('folio-match')), true);
+    const afterLength = await page.evaluate(() => document.querySelector('main')!.innerHTML.replace(/ data-folio-highlight="[a-z]+"/g, '').length);
+    assert.equal(afterLength, before);
+  });
+});
+
+describe('partially loaded conversation (synthetic)', () => {
+  it('reports partial coverage when the first loaded message is a reply and a loader is shown', async () => {
+    await open('partial');
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.messages.length, 5);
+    assert.equal(snapshot.messages[0]!.role, 'assistant');
+    assert.equal(snapshot.coverage.level, 'partial');
+    const codes = snapshot.coverage.signals.map((s) => s.code).sort();
+    assert.deepEqual(codes, ['first-not-human', 'loading-indicator']);
+    const exchanges = await call<{ labelSource: string }[]>('exchanges');
+    assert.equal(exchanges[0]!.labelSource, 'reply-excerpt');
+  });
+
+  it('updates when claude.ai loads the earlier messages', async () => {
+    await page.evaluate(() => {
+      document.getElementById('loading')!.remove();
+      const conversation = document.getElementById('conversation')!;
+      conversation.insertAdjacentHTML(
+        'afterbegin',
+        '<div data-test-render-count="1"><div data-testid="user-message"><p>How long should my levain take?</p></div></div>',
+      );
+    });
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.messages.length, 6);
+    assert.equal(snapshot.messages[0]!.role, 'human');
+    assert.equal(snapshot.coverage.level, 'loaded-only');
+  });
+});
+
+describe('branched conversation (synthetic)', () => {
+  it('reports versions at edited prompts and retried replies, ignoring look-alike text inside messages', async () => {
+    await open('branched');
+    const messages = await call<Discovered[]>('discover');
+    assert.equal(messages.length, 6);
+    assert.deepEqual(messages.map((m) => m.branch), [null, null, { current: 2, total: 3 }, { current: 1, total: 2 }, null, null]);
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.coverage.branchPoints, 2);
+    assert.equal(snapshot.coverage.level, 'loaded-only');
+    assert.match(snapshot.coverage.statement, /Only the version shown at 2 branch points is indexed/);
+    assert.ok(snapshot.coverage.signals.some((s) => s.code === 'branches' && s.count === 2));
+  });
+
+  it('starts fresh when the user switches versions instead of keeping messages from the other branch', async () => {
+    await call<Snapshot>('snapshot');
+    await page.evaluate(() => {
+      document.getElementById('prompt-version-label')!.textContent = '3 / 3';
+      document.querySelector('#edited-prompt p')!.textContent = 'How do we backfill without locking the table?';
+      const turns = Array.from(document.querySelectorAll('[data-test-render-count]'));
+      for (const turn of turns.slice(4)) turn.remove();
+    });
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.messages.length, 4);
+    assert.equal(snapshot.coverage.notRenderedCount, 0);
+  });
+});
+
+describe('edge cases (synthetic)', () => {
+  it('handles duplicates, markup-like text, RTL, image-only prompts, streaming replies and prompts being edited', async () => {
+    await open('edge');
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.deepEqual(snapshot.messages.map((m) => m.role), ['human', 'assistant', 'human', 'assistant', 'human', 'assistant']);
+    const [first, , second] = snapshot.messages;
+    assert.equal(first!.digest, second!.digest);
+    assert.deepEqual([first!.occurrence, second!.occurrence], [0, 1]);
+    assert.notEqual(first!.key, second!.key);
+    assert.equal(snapshot.messages[4]!.chars, 0);
+    assert.equal(snapshot.messages[5]!.streaming, true);
+    assert.deepEqual(snapshot.messages[1]!.headings.map((h) => h.text), [`Results ${String.fromCodePoint(0x1f680)} & next steps`]);
+    const codes = snapshot.coverage.signals.map((s) => s.code).sort();
+    assert.deepEqual(codes, ['no-text', 'streaming']);
+
+    const texts = (await call<Discovered[]>('discover')).map((m) => m.text);
+    assert.ok(texts[1]!.includes('<img src=x onerror="window.__folioPwned=1">'));
+    assert.ok(texts[3]!.includes('שלום עולם'));
+    assert.ok(!texts.join('\n').includes('EDITING-PROMPT-TEXT'));
+    assert.equal(await page.evaluate(() => (window as unknown as { __folioPwned?: number }).__folioPwned ?? null), null);
+  });
+
+  it('resolves the second of two identical prompts to the second one', async () => {
+    const snapshot = await call<Snapshot>('snapshot');
+    const anchor = await call<MessageAnchor>('anchorFor', snapshot.messages[2]!.key);
+    await call('jump', anchor, {});
+    const highlighted = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-testid="user-message"]')).findIndex((el) => el.hasAttribute('data-folio-highlight')),
+    );
+    assert.equal(highlighted, 1);
+  });
+
+  it('follows a streaming reply without leaving a stale copy behind', async () => {
+    await page.evaluate(() => {
+      const reply = document.getElementById('streaming-reply')!;
+      reply.querySelector('p')!.textContent += ' a maple leaf with early autumn colour.';
+    });
+    let snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.messages.length, 6);
+    assert.equal(snapshot.coverage.notRenderedCount, 0);
+    await page.evaluate(() => document.getElementById('streaming-reply')!.setAttribute('data-is-streaming', 'false'));
+    snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.messages[5]!.streaming, false);
+    assert.ok(!snapshot.coverage.signals.some((s) => s.code === 'streaming'));
+  });
+});
+
+describe('layout drift and unsupported pages (synthetic)', () => {
+  it('falls back to CSS class names and reports that as partial', async () => {
+    await open('drifted');
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.messages.length, 4);
+    assert.equal(snapshot.strategy.id, 'class-fallback');
+    assert.equal(snapshot.strategy.stable, false);
+    assert.equal(snapshot.coverage.level, 'partial');
+    assert.ok(snapshot.coverage.signals.some((s) => s.code === 'fallback-selectors'));
+  });
+
+  it('reports that nothing was recognized instead of guessing', async () => {
+    await open('unrecognized');
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.state, 'no-messages');
+    assert.equal(snapshot.messages.length, 0);
+    assert.equal(snapshot.coverage.level, 'none');
+  });
+
+  it('reports no conversation on claude.ai pages without one', async () => {
+    await open('home');
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.state, 'no-conversation');
+    assert.equal(snapshot.conversation, null);
+    assert.equal(FIXTURES.home.path, '/new');
+  });
+});
+
+describe('long conversation (synthetic, 500 messages)', () => {
+  it('indexes all 500 messages quickly and finds a specific answer', async () => {
+    await open('long');
+    const snapshot = await call<Snapshot>('snapshot');
+    assert.equal(snapshot.messages.length, 500);
+    assert.equal(snapshot.messages.reduce((n, m) => n + m.headings.length, 0), 25);
+    const ms = await call<number>('timeRefresh');
+    console.log(`# full index of 500 synthetic messages: ${ms.toFixed(1)} ms`);
+    assert.ok(ms < 2000, `indexing took ${ms} ms`);
+    const result = await call<SearchResult>('search', `"${NEEDLE_PHRASE}"`);
+    assert.equal(result.total, 1);
+    assert.equal(result.hits[0]!.exchange, NEEDLE_EXCHANGE);
+  });
+
+  it('keeps virtualized-away messages as "not loaded", refuses to jump to them, and restores them', async () => {
+    const snapshot = await call<Snapshot>('snapshot');
+    const early = await call<MessageAnchor>('anchorFor', snapshot.messages[10]!.key);
+    await page.evaluate(() => {
+      const turns = Array.from(document.querySelectorAll('[data-test-render-count]'));
+      (window as unknown as { __removed: Element[] }).__removed = turns.slice(0, 200);
+      for (const turn of turns.slice(0, 200)) turn.remove();
+    });
+    let after = await call<Snapshot>('snapshot');
+    assert.equal(after.coverage.knownCount, 500);
+    assert.equal(after.coverage.renderedCount, 300);
+    assert.equal(after.coverage.notRenderedCount, 200);
+    assert.equal(after.coverage.level, 'partial');
+    const located = await call<{ resolution: Resolution }>('locate', early);
+    assert.equal(located.resolution.status, 'unresolved');
+    assert.equal(located.resolution.status === 'unresolved' && located.resolution.reason, 'not-loaded');
+    const result = await call<SearchResult>('search', '"Step 6:"');
+    assert.equal(result.hits[0]?.rendered, false);
+
+    await page.evaluate(() => {
+      const removed = (window as unknown as { __removed: Element[] }).__removed;
+      document.getElementById('conversation')!.prepend(...removed);
+    });
+    after = await call<Snapshot>('snapshot');
+    assert.equal(after.coverage.renderedCount, 500);
+    assert.equal(after.coverage.notRenderedCount, 0);
+    assert.equal((await call<{ resolution: Resolution }>('locate', early)).resolution.status, 'exact');
+  });
+
+  it('made no network requests other than the synthetic documents', () => {
+    const unexpected = page.requests.filter((r) => r.outcome === 'blocked');
+    assert.deepEqual(unexpected, []);
+  });
+});

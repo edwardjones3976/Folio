@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="folio-fixture" content="synthetic">
+<title>Synthetic fixture: Planning drip irrigation - Claude</title>
+<style>
+  body { margin: 0; font: 16px/1.5 sans-serif; }
+  .shell { display: flex; height: 100vh; }
+  nav { width: 220px; overflow: auto; border-right: 1px solid #ccc; padding: 8px; }
+  .scroller { flex: 1; overflow-y: auto; }
+  .turn { max-width: 720px; margin: 0 auto; padding: 16px; }
+  .fixture-banner { background: #fee2e2; padding: 4px 8px; font-size: 12px; }
+  .composer { position: sticky; bottom: 0; background: #fff; max-width: 720px; margin: 0 auto; }
+</style>
+</head>
+<body>
+<!--
+  SYNTHETIC TEST FIXTURE for Folio. Hand-written; NOT captured from claude.ai; no real user data.
+  Models only the attributes Folio's claude.ai adapter relies on (see fixtures/claude/README.md).
+-->
+<div class="fixture-banner" role="note">Synthetic test fixture modelled on claude.ai. Not real claude.ai content.</div>
+<div class="shell">
+  <nav aria-label="Chats">
+    <a href="/chat/22222222-2222-4222-8222-222222222222">Sourdough timing (sidebar entry, not a message)</a>
+  </nav>
+  <main class="scroller">
+    <div class="conversation">
+      <div data-test-render-count="1" class="turn">
+        <div class="group"><div data-testid="user-message" class="font-user-message"><p class="whitespace-pre-wrap">I want to plan drip irrigation for a 6 by 3 metre vegetable bed.
+Where should I start?</p></div></div>
+      </div>
+      <div data-test-render-count="1" class="turn">
+        <div data-is-streaming="false" class="group">
+          <div class="font-claude-response"><div class="standard-markdown">
+            <p>A drip system for an 18 square metre bed is a good weekend project. Start with water needs, then layout.</p>
+            <h2>Water needs</h2>
+            <p>Most vegetables need about 25 mm of water per week in mild weather.</p>
+            <h3>Emitter spacing</h3>
+            <ul><li>Use pressure-compensating emitters every 30 cm.</li><li>Run one line per crop row.</li></ul>
+            <h2>Layout</h2>
+            <pre><code>total_flow_l_per_h = emitters * 2</code></pre>
+          </div></div>
+          <div class="actions"><button type="button" aria-label="Copy">Copy</button><button type="button" aria-label="Retry">Retry</button></div>
+        </div>
+      </div>
+
+      <div data-test-render-count="1" class="turn">
+        <div class="group"><div data-testid="user-message" class="font-user-message"><p class="whitespace-pre-wrap">What parts do I need from the tap to the bed?</p></div></div>
+      </div>
+      <div data-test-render-count="1" class="turn">
+        <div data-is-streaming="false" class="group">
+          <div class="font-claude-response"><div class="standard-markdown">
+            <h2>Parts list</h2>
+            <ol><li>A backflow preventer at the tap.</li><li>A filter and a pressure regulator.</li><li>16 mm supply tubing and fittings.</li></ol>
+            <p>Order the backflow preventer first; it protects drinking water.</p>
+          </div></div>
+          <div class="actions"><button type="button">Copy</button></div>
+        </div>
+      </div>
+
+      <div data-test-render-count="1" class="turn">
+        <div class="group"><div data-testid="user-message" class="font-user-message"><p class="whitespace-pre-wrap">How long should I run it each day?</p></div></div>
+      </div>
+      <div data-test-render-count="1" class="turn">
+        <div data-is-streaming="false" class="group">
+          <div class="font-claude-response"><div class="standard-markdown">
+            <p>With 40 emitters at 2 L/h, a 30 minute run delivers about 40 litres.</p>
+            <table><tr><th>Season</th><th>Minutes per day</th></tr><tr><td>Spring</td><td>20</td></tr><tr><td>Summer</td><td>35</td></tr></table>
+          </div></div>
+        </div>
+      </div>
+
+      <div data-test-render-count="1" class="turn">
+        <div class="group"><div data-testid="user-message" class="font-user-message"><p class="whitespace-pre-wrap">Can I automate it with a timer?</p></div></div>
+      </div>
+      <div data-test-render-count="1" class="turn">
+        <div data-is-streaming="false" class="group">
+          <div class="font-claude-response"><div class="standard-markdown">
+            <h2>Timer options</h2>
+            <p>A battery tap timer is the simplest choice. Pair it with the pressure-compensating emitters so flow stays even.</p>
+          </div></div>
+        </div>
+      </div>
+
+      <div data-test-render-count="1" class="turn">
+        <div class="group"><div data-testid="user-message" class="font-user-message"><p class="whitespace-pre-wrap">What about winter?</p></div></div>
+      </div>
+      <div data-test-render-count="1" class="turn">
+        <div data-is-streaming="false" class="group">
+          <div class="font-claude-response"><div class="standard-markdown">
+            <h2>Winterizing</h2>
+            <p>Drain the lines, remove the filter screen and store the timer indoors before the first frost.</p>
+          </div></div>
+        </div>
+      </div>
+
+      <div data-test-render-count="1" class="turn">
+        <div class="group"><div data-testid="user-message" class="font-user-message"><p class="whitespace-pre-wrap">Thanks, summarize the plan in three bullets.</p></div></div>
+      </div>
+      <div data-test-render-count="1" class="turn">
+        <div data-is-streaming="false" class="group">
+          <div class="font-claude-response"><div class="standard-markdown">
+            <ul><li>Install a backflow preventer, filter and regulator at the tap.</li><li>Lay one line of emitters per row, 30 cm apart.</li><li>Run 20 to 35 minutes a day on a tap timer; drain before frost.</li></ul>
+          </div></div>
+        </div>
+      </div>
+    </div>
+
+    <fieldset class="composer">
+      <div contenteditable="true" class="ProseMirror" aria-label="Write your prompt to Claude"><p>DRAFT-COMPOSER-TEXT that Folio must never read</p></div>
+      <input type="password" value="fixture-password-must-not-be-read" aria-label="Unrelated password field">
+      <button type="button" aria-label="Send message">Send</button>
+    </fieldset>
+  </main>
+</div>
+</body>
+</html>

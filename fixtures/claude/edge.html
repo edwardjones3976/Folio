@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="folio-fixture" content="synthetic">
+<title>Synthetic fixture: Edge cases - Claude</title>
+<style>
+  body { margin: 0; font: 16px/1.5 sans-serif; }
+  .scroller { height: 100vh; overflow-y: auto; }
+  .turn { max-width: 720px; margin: 0 auto; padding: 16px; }
+  .fixture-banner { background: #fee2e2; padding: 4px 8px; font-size: 12px; }
+</style>
+</head>
+<body>
+<!--
+  SYNTHETIC TEST FIXTURE for Folio. Hand-written; NOT captured from claude.ai; no real user data.
+  Edge cases: two identical prompts, markup-like text that must stay inert text, right-to-left and
+  accented text, an image-only prompt, a reply that is still streaming, and a prompt being edited
+  inside a form (must not be read).
+-->
+<div class="fixture-banner" role="note">Synthetic test fixture modelled on claude.ai. Not real claude.ai content.</div>
+<main class="scroller">
+  <div class="conversation" id="conversation">
+    <div data-test-render-count="1" class="turn">
+      <div class="group"><div data-testid="user-message" class="font-user-message"><p>Continue</p></div></div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div data-is-streaming="false" class="group">
+        <div class="font-claude-response"><div class="standard-markdown">
+          <h2>Results 🚀 &amp; next steps</h2>
+          <p>Untrusted text examples: &lt;img src=x onerror="window.__folioPwned=1"&gt; and &lt;script&gt;window.__folioPwned=2&lt;/script&gt;.</p>
+        </div></div>
+      </div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div class="group"><div data-testid="user-message" class="font-user-message"><p>Continue</p></div></div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div data-is-streaming="false" class="group">
+        <div class="font-claude-response"><div class="standard-markdown">
+          <p dir="rtl">שלום עולם — مرحبا بالعالم</p>
+          <p>Café naïve façade, ÉCOLE in capitals.</p>
+        </div></div>
+      </div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div class="group"><div data-testid="user-message" class="font-user-message"><img alt="" width="40" height="40" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></div></div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <div data-is-streaming="true" class="group" id="streaming-reply">
+        <div class="font-claude-response"><div class="standard-markdown"><p>Looking at the leaf, it seems to be</p></div></div>
+      </div>
+    </div>
+    <div data-test-render-count="1" class="turn">
+      <form class="group" aria-label="Edit prompt">
+        <textarea data-testid="user-message" class="font-user-message">EDITING-PROMPT-TEXT that Folio must never read</textarea>
+        <button type="submit">Save</button>
+      </form>
+    </div>
+  </div>
+</main>
+</body>
+</html>
